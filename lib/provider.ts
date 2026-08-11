@@ -108,7 +108,7 @@ export async function refreshProvider(
 		}
 		let models: ProviderModelConfig[];
 		if (options?.isInitial) {
-			models = mapOpenAIModelsToPi(entries, new Map(), new Map());
+			models = mapOpenAIModelsToPi(entries, new Map(), new Map(), new Map(), new Map());
 		} else {
 			const { contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel } = await buildModelLimits(
 				entries,
