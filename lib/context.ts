@@ -279,6 +279,7 @@ async function loadPropsForRunningModels(serverOrigin: string, apiKey?: string):
 export async function loadContextFromRunning(
 	serverOrigin: string,
 	apiKey?: string,
+	skipModels?: Set<string>,
 ): Promise<Map<string, number>> {
 	const result = new Map<string, number>();
 	const url = `${serverOrigin.replace(/\/$/, "")}/running`;
@@ -313,10 +314,11 @@ export async function loadContextFromRunning(
 
 	const processes = payload.running ?? [];
 	await Promise.all(
-		processes.map(async (proc) => {
-			if (!proc.model) {
-				return;
-			}
+	processes.map(async (proc) => {
+		if (!proc.model) {
+			return;
+		}
+		if (skipModels?.has(proc.model)) return;
 
 			let ctx: number | undefined;
 			if (proc.proxy) {
@@ -365,7 +367,8 @@ export async function buildModelLimits(
 	}
 
 	const serverOrigin = buildServerOrigin(config);
-	const fromRunning = await loadContextFromRunning(serverOrigin, config.apiKey);
+	const skipModels = overrides ? new Set(Object.keys(overrides)) : undefined;
+	const fromRunning = await loadContextFromRunning(serverOrigin, config.apiKey, skipModels);
 	for (const [id, ctx] of fromRunning) {
 		contextByModel.set(id, ctx);
 	}
