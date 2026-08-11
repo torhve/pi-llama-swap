@@ -98,13 +98,25 @@ export async function refreshProvider(
 	const baseUrl = buildBaseUrl(config);
 
 	try {
-		const entries = await fetchModels(baseUrl, config.apiKey);
-		const { contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel } = await buildModelLimits(
-			entries,
-			config,
-			config.contextOverrides,
-		);
-		const models = mapOpenAIModelsToPi(entries, contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel);
+		const modelsController = new AbortController();
+		const modelsTimeout = setTimeout(() => modelsController.abort(), 3000);
+		let entries: OpenAIModelEntry[];
+		try {
+			entries = await fetchModels(baseUrl, config.apiKey, modelsController.signal);
+		} finally {
+			clearTimeout(modelsTimeout);
+		}
+		let models: ProviderModelConfig[];
+		if (options?.isInitial) {
+			models = mapOpenAIModelsToPi(entries, new Map(), new Map());
+		} else {
+			const { contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel } = await buildModelLimits(
+				entries,
+				config,
+				config.contextOverrides,
+			);
+			models = mapOpenAIModelsToPi(entries, contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel);
+		}
 
 		if (hasRegisteredProvider) {
 			pi.unregisterProvider(PROVIDER_ID);
