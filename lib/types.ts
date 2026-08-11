@@ -2,8 +2,12 @@
  * Shared types for the pi llama-swap extension.
  */
 
-/** Persisted connection settings for llama-swap. */
-export interface LlamaSwapConfig {
+/** Persisted connection settings for one llama-swap endpoint. */
+export interface LlamaSwapInstance {
+	/** Provider id registered in pi (unique, e.g. `llama-swap`, `llama-swap-2`). */
+	id: string;
+	/** Human-readable provider name shown in pi (e.g. `/model` list). */
+	name: string;
 	/** Origin without path, e.g. `http://127.0.0.1`. */
 	origin: string;
 	/** TCP port (1–65535). */
@@ -14,6 +18,11 @@ export interface LlamaSwapConfig {
 	apiKey?: string;
 	/** Per-model context window overrides (model id -> tokens). */
 	contextOverrides?: Record<string, number>;
+}
+
+/** Extension config: one or more llama-swap instances. */
+export interface LlamaSwapConfig {
+	instances: LlamaSwapInstance[];
 }
 
 /** OpenAI-compatible model entry from GET /v1/models. */

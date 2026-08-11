@@ -1,5 +1,6 @@
 /**
- * Pi extension entry: llama-swap provider with dynamic model discovery.
+ * Pi extension entry: llama-swap providers with dynamic model discovery.
+ * Supports one or more llama-swap instances (see config.ts).
  *
  * Usage: pi -e /path/to/pi-llama-swap
  *
@@ -9,16 +10,17 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { loadConfig, saveContextOverride } from "./lib/config.js";
-import { refreshProvider, PROVIDER_ID } from "./lib/provider.js";
+import { refreshProvider } from "./lib/provider.js";
 
 /**
  * Pi extension factory (async for model discovery before startup).
  * @param pi - Extension API instance.
  */
 export default async function llamaSwapExtension(pi: ExtensionAPI): Promise<void> {
-	const config = await loadConfig();
-	const result = await refreshProvider(pi, config, { isInitial: true });
-	let contextRefreshedForModel: string | undefined;
+	const initialConfig = await loadConfig();
+	const result = await refreshProvider(pi, initialConfig, { isInitial: true });
+	/** Provider id → model id already refreshed with context limits. */
+	let contextRefreshedForModel = new Map<string, string>();
 
 	if (result.error) {
 		console.warn(`[llama-swap] ${result.error}`);
@@ -29,13 +31,18 @@ export default async function llamaSwapExtension(pi: ExtensionAPI): Promise<void
 	// can read the actual llama-server `/props` n_ctx for subsequent requests.
 	pi.on("after_provider_response", async (_event, ctx) => {
 		const model = ctx.model;
-		if (!model || model.provider !== PROVIDER_ID || model.id === contextRefreshedForModel) {
+		if (!model) {
+			return;
+		}
+		const config = await loadConfig();
+		const instance = config.instances.find((inst) => inst.id === model.provider);
+		if (!instance || model.id === contextRefreshedForModel.get(model.provider)) {
 			return;
 		}
 
-		const refresh = await refreshProvider(pi, await loadConfig());
+		const refresh = await refreshProvider(pi, config);
 		if (!refresh.error) {
-			contextRefreshedForModel = model.id;
+			contextRefreshedForModel.set(model.provider, model.id);
 		}
 	});
 
@@ -43,7 +50,13 @@ export default async function llamaSwapExtension(pi: ExtensionAPI): Promise<void
 		description: "Set or clear context window override for the current model",
 		handler: async (args, ctx) => {
 			const model = ctx.model;
-			if (!model || model.provider !== PROVIDER_ID) {
+			if (!model) {
+				ctx.ui.notify("No model selected. Use /model first.", "warning");
+				return;
+			}
+			const config = await loadConfig();
+			const instance = config.instances.find((inst) => inst.id === model.provider);
+			if (!instance) {
 				ctx.ui.notify("No llama-swap model selected. Use /model first.", "warning");
 				return;
 			}
@@ -53,14 +66,14 @@ export default async function llamaSwapExtension(pi: ExtensionAPI): Promise<void
 			if (trimmed === "auto") {
 				const ok = await ctx.ui.confirm(
 					"Clear context override",
-					`Use auto-detected context window for "${model.id}"?`,
+					`Clear context override for "${model.id}" (${instance.name})?`,
 				);
 				if (!ok) return;
 
-				await saveContextOverride(model.id, undefined);
+				await saveContextOverride(instance.id, model.id, undefined);
 				// ponyail: reload config + refresh to pick up removed override
-				const config = await loadConfig();
-				await refreshProvider(pi, config);
+				const config2 = await loadConfig();
+				await refreshProvider(pi, config2);
 				ctx.ui.notify(`Context override removed for ${model.id}. Now auto-detected.`);
 				return;
 			}
@@ -76,14 +89,14 @@ export default async function llamaSwapExtension(pi: ExtensionAPI): Promise<void
 
 			const ok = await ctx.ui.confirm(
 				"Set context override",
-				`Set context window to ${ctxSize} for "${model.id}"?`,
+				`Set context window to ${ctxSize} for "${model.id}" (${instance.name})?`,
 			);
 			if (!ok) return;
 
-			await saveContextOverride(model.id, ctxSize);
+			await saveContextOverride(instance.id, model.id, ctxSize);
 			// ponyail: reload config + refresh to pick up new override
-			const config = await loadConfig();
-			await refreshProvider(pi, config);
+			const config2 = await loadConfig();
+			await refreshProvider(pi, config2);
 			ctx.ui.notify(`Context window for ${model.id} set to ${ctxSize}.`);
 		},
 	});

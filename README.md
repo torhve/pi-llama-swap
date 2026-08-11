@@ -56,7 +56,7 @@ No config file needed when llama-swap runs on the defaults above.
 
 ### Config file
 
-Create `~/.pi/agent/pi-llama-swap.json` to override defaults:
+Create `~/.pi/agent/pi-llama-swap.json` to override defaults. One instance (legacy shape):
 
 ```json
 {
@@ -69,8 +69,21 @@ Create `~/.pi/agent/pi-llama-swap.json` to override defaults:
 }
 ```
 
+Multiple llama-swap servers — use the `instances` array. Each entry registers its own pi provider (visible in `/model`):
+
+```json
+{
+  "instances": [
+    { "id": "llama-swap", "origin": "http://192.168.1.10", "port": 8080, "apiKey": "key-1" },
+    { "id": "llama-swap-big", "name": "Llama Swap Big", "origin": "http://192.168.1.11", "port": 8081 }
+  ]
+}
+```
+
 | Field | Description |
 |-------|-------------|
+| `id` | Provider id registered in pi (unique). Default: `llama-swap`, `llama-swap-2`, … |
+| `name` | Provider name shown in pi. Default: `Llama Swap`, `Llama Swap 2`, … |
 | `origin` | Scheme + host (e.g. `http://192.168.1.10`) |
 | `port` | TCP port (1–65535) |
 | `basePath` | API path prefix (default `/v1`; normalized to end with `/v1`) |
@@ -94,9 +107,9 @@ Optional runtime overrides (highest precedence):
 
 | Variable | Purpose |
 |----------|---------|
-| `LLAMA_SWAP_URL` | Origin URL (scheme + host, optional port/path) |
-| `LLAMA_SWAP_PORT` | Port override |
-| `LLAMA_SWAP_API_KEY` | API key override |
+| `LLAMA_SWAP_URL` | Origin URL (scheme + host, optional port/path) — applied to the first instance |
+| `LLAMA_SWAP_PORT` | Port override — applied to the first instance |
+| `LLAMA_SWAP_API_KEY` | API key override — applied to the first instance |
 
 ## Auth
 

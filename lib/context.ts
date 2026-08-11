@@ -2,7 +2,7 @@
  * Resolve per-model context windows from llama-swap HTTP APIs only.
  */
 
-import type { LlamaSwapConfig, OpenAIModelEntry } from "./types.js";
+import type { LlamaSwapInstance, OpenAIModelEntry } from "./types.js";
 import { buildServerOrigin } from "./url.js";
 
 /** Default context when llama-swap APIs do not report one (256K). */
@@ -339,12 +339,12 @@ export async function loadContextFromRunning(
 /**
  * Builds per-model context and max-token maps from llama-swap APIs.
  * @param entries - Models from GET /v1/models.
- * @param config - Extension connection settings.
+ * @param config - Instance connection settings.
  * @returns Context and max-token maps keyed by model id.
  */
 export async function buildModelLimits(
 	entries: OpenAIModelEntry[],
-	config: LlamaSwapConfig,
+	config: LlamaSwapInstance,
 	overrides?: Record<string, number>,
 ): Promise<{
 	contextByModel: Map<string, number>;

@@ -2,7 +2,7 @@
  * URL parsing and base URL construction for llama-swap endpoints.
  */
 
-import type { LlamaSwapConfig } from "./types.js";
+import type { LlamaSwapInstance } from "./types.js";
 
 const DEFAULT_ORIGIN = "http://127.0.0.1";
 const DEFAULT_PORT = 8080;
@@ -10,10 +10,10 @@ const DEFAULT_BASE_PATH = "/v1";
 
 /**
  * Returns default llama-swap connection settings.
- * @returns Fresh default config object.
+ * @returns Fresh default instance (id/name filled by caller).
  */
-export function defaultConfig(): LlamaSwapConfig {
-	return { origin: DEFAULT_ORIGIN, port: DEFAULT_PORT, basePath: DEFAULT_BASE_PATH };
+export function defaultInstance(): LlamaSwapInstance {
+	return { id: "", name: "", origin: DEFAULT_ORIGIN, port: DEFAULT_PORT, basePath: DEFAULT_BASE_PATH };
 }
 
 /**
@@ -34,10 +34,10 @@ export function normalizeBasePath(pathname: string): string {
 
 /**
  * Builds llama-swap server origin (`{scheme}://{host}:{port}`) without API path.
- * @param config - Connection settings.
+ * @param config - Instance connection settings.
  * @returns Root server URL for endpoints like `/running`.
  */
-export function buildServerOrigin(config: LlamaSwapConfig): string {
+export function buildServerOrigin(config: LlamaSwapInstance): string {
 	const origin = config.origin.includes("://") ? config.origin : `http://${config.origin}`;
 	const url = new URL(origin);
 	url.port = String(config.port);
@@ -49,10 +49,10 @@ export function buildServerOrigin(config: LlamaSwapConfig): string {
 
 /**
  * Builds the OpenAI API base URL (`{origin}:{port}{basePath}`) from config.
- * @param config - Connection settings with origin, port, and optional basePath.
+ * @param config - Instance connection settings with origin, port, and optional basePath.
  * @returns Normalized base URL without trailing slash.
  */
-export function buildBaseUrl(config: LlamaSwapConfig): string {
+export function buildBaseUrl(config: LlamaSwapInstance): string {
 	const origin = config.origin.includes("://") ? config.origin : `http://${config.origin}`;
 	const url = new URL(origin);
 	url.port = String(config.port);
@@ -123,13 +123,15 @@ export function parsePortArg(arg: string): number {
 }
 
 /**
- * Merges a partial config update into an existing config.
- * @param current - Current settings.
+ * Merges a partial config update into an existing instance.
+ * @param current - Current instance settings.
  * @param partial - Fields to update.
- * @returns New config object.
+ * @returns New instance object.
  */
-export function mergeConfig(current: LlamaSwapConfig, partial: Partial<LlamaSwapConfig>): LlamaSwapConfig {
+export function mergeConfig(current: LlamaSwapInstance, partial: Partial<LlamaSwapInstance>): LlamaSwapInstance {
 	return {
+		id: partial.id ?? current.id,
+		name: partial.name ?? current.name,
 		origin: partial.origin ?? current.origin,
 		port: partial.port ?? current.port,
 		basePath: partial.basePath ?? current.basePath,
