@@ -209,79 +209,28 @@ async function fetchProps(url: URL | string, headers: Record<string, string> = {
 }
 
 /**
- * Fetches n_ctx from a running llama-server upstream `/props` endpoint.
- * @param proxyUrl - Upstream base URL (e.g. `http://localhost:5802`).
- * @returns Context window or undefined.
+ * Info discovered for one running model.
  */
-async function fetchUpstreamContext(proxyUrl: string): Promise<number | undefined> {
-	const props = await fetchProps(`${proxyUrl.replace(/\/$/, "")}/props`);
-	return toPositiveInt(props?.default_generation_settings?.n_ctx);
+interface RunningModelInfo {
+	/** n_ctx in tokens (upstream /props, else `-c`/`--ctx-size` in cmd). */
+	ctx?: number;
+	/** Parsed /props for capability detection (vision, reasoning). */
+	props?: LlamaServerProps;
 }
 
 /**
- * Fetches `/props` only from already-running llama-server processes.
- * Querying llama-swap's `/props?model=…` for every configured model can start
- * model swaps, which blocks Pi startup while those requests wait to complete.
- */
-async function loadPropsForRunningModels(serverOrigin: string, apiKey?: string): Promise<Map<string, LlamaServerProps>> {
-	const result = new Map<string, LlamaServerProps>();
-	const headers: Record<string, string> = { Accept: "application/json" };
-	if (apiKey) {
-		headers.Authorization = `Bearer ${apiKey}`;
-	}
-
-	let response: Response;
-	try {
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-		try {
-			response = await fetch(`${serverOrigin.replace(/\/$/, "")}/running`, {
-				method: "GET",
-				headers,
-				signal: controller.signal,
-			});
-		} finally {
-			clearTimeout(timeout);
-		}
-	} catch {
-		return result;
-	}
-	if (!response.ok) {
-		return result;
-	}
-
-	let payload: RunningResponse;
-	try {
-		payload = (await response.json()) as RunningResponse;
-	} catch {
-		return result;
-	}
-
-	await Promise.all(
-		(payload.running ?? []).map(async (proc) => {
-			if (!proc.model || !proc.proxy) return;
-			const props = await fetchProps(`${proc.proxy.replace(/\/$/, "")}/props`);
-			if (props) {
-				result.set(proc.model, props);
-			}
-		}),
-	);
-
-	return result;
-}
-
-/**
- * Fetches context hints from GET /running (upstream /props, else cmd parse).
+ * Fetches GET /running and discovers per-model info in a single pass.
+ * For each running model, /props is fetched from the upstream proxy, with
+ * llama-swap's own /props?model=… as fallback (remote instance: the proxy
+ * is localhost on the swap host, unreachable from Pi's machine). Only
+ * already-running models are queried, so no model swaps are started that
+ * could block Pi startup.
  * @param serverOrigin - llama-swap root URL (no `/v1`).
  * @param apiKey - Optional Bearer token.
- * @returns Map of model id → context tokens.
+ * @returns Map of model id → discovered info.
  */
-export async function loadContextFromRunning(
-	serverOrigin: string,
-	apiKey?: string,
-	skipModels?: Set<string>,
-): Promise<Map<string, number>> {
-	const result = new Map<string, number>();
+async function loadRunningModelInfo(serverOrigin: string, apiKey?: string): Promise<Map<string, RunningModelInfo>> {
+	const result = new Map<string, RunningModelInfo>();
 	const url = `${serverOrigin.replace(/\/$/, "")}/running`;
 	const headers: Record<string, string> = { Accept: "application/json" };
 	if (apiKey) {
@@ -300,7 +249,6 @@ export async function loadContextFromRunning(
 	} catch {
 		return result;
 	}
-
 	if (!response.ok) {
 		return result;
 	}
@@ -312,24 +260,27 @@ export async function loadContextFromRunning(
 		return result;
 	}
 
-	const processes = payload.running ?? [];
+	const origin = serverOrigin.replace(/\/$/, "");
 	await Promise.all(
-	processes.map(async (proc) => {
-		if (!proc.model) {
-			return;
-		}
-		if (skipModels?.has(proc.model)) return;
-
-			let ctx: number | undefined;
-			if (proc.proxy) {
-				ctx = await fetchUpstreamContext(proc.proxy);
+		(payload.running ?? []).map(async (proc) => {
+			if (!proc.model) {
+				return;
 			}
+
+			let props: LlamaServerProps | undefined;
+			if (proc.proxy) {
+				props = await fetchProps(`${proc.proxy.replace(/\/$/, "")}/props`, headers);
+			}
+			if (!props) {
+				props = await fetchProps(`${origin}/props?model=${encodeURIComponent(proc.model)}`, headers);
+			}
+
+			let ctx: number | undefined = toPositiveInt(props?.default_generation_settings?.n_ctx);
 			if (!ctx && proc.cmd) {
 				ctx = parseContextFromCmd(proc.cmd);
 			}
-			if (ctx) {
-				result.set(proc.model, ctx);
-			}
+
+			result.set(proc.model, { ctx, props });
 		}),
 	);
 
@@ -368,9 +319,12 @@ export async function buildModelLimits(
 
 	const serverOrigin = buildServerOrigin(config);
 	const skipModels = overrides ? new Set(Object.keys(overrides)) : undefined;
-	const fromRunning = await loadContextFromRunning(serverOrigin, config.apiKey, skipModels);
-	for (const [id, ctx] of fromRunning) {
-		contextByModel.set(id, ctx);
+	const running = await loadRunningModelInfo(serverOrigin, config.apiKey);
+	for (const [id, info] of running) {
+		// ponyail: models with context overrides keep their user-chosen size
+		if (!skipModels?.has(id) && info.ctx) {
+			contextByModel.set(id, info.ctx);
+		}
 	}
 
 	// ponyail: user overrides beat all discovered values
@@ -379,12 +333,15 @@ export async function buildModelLimits(
 			contextByModel.set(id, ctx);
 		}
 	}
-	const propsByModel = await loadPropsForRunningModels(serverOrigin, config.apiKey);
 	const imageInputByModel = new Map(
-		[...propsByModel].filter(([, props]) => supportsImageInput(props)).map(([id]) => [id, true] as const),
+		[...running]
+			.filter(([, info]) => info.props && supportsImageInput(info.props))
+			.map(([id]) => [id, true] as const),
 	);
 	const reasoningByModel = new Map(
-		[...propsByModel].filter(([, props]) => supportsReasoning(props)).map(([id]) => [id, true] as const),
+		[...running]
+			.filter(([, info]) => info.props && supportsReasoning(info.props))
+			.map(([id]) => [id, true] as const),
 	);
 
 	return { contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel };

@@ -110,17 +110,14 @@ async function refreshInstance(
 		} finally {
 			clearTimeout(modelsTimeout);
 		}
-		let models: ProviderModelConfig[];
-		if (options?.isInitial) {
-			models = mapOpenAIModelsToPi(entries, new Map(), new Map(), new Map(), new Map());
-		} else {
-			const { contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel } = await buildModelLimits(
-				entries,
-				instance,
-				instance.contextOverrides,
-			);
-			models = mapOpenAIModelsToPi(entries, contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel);
-		}
+		// Initial load probes only models already running (no model swaps), so
+		// reasoning/vision/context flags are correct before the first request.
+		const { contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel } = await buildModelLimits(
+			entries,
+			instance,
+			instance.contextOverrides,
+		);
+		const models = mapOpenAIModelsToPi(entries, contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel);
 
 		if (registeredIds.has(instance.id)) {
 			pi.unregisterProvider(instance.id);
