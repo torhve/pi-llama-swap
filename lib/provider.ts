@@ -44,15 +44,37 @@ export function mapOpenAIModelsToPi(
 		const contextWindow = resolveContextWindow(model.id, contextByModel);
 		const maxTokens = resolveMaxTokens(model.id, maxTokensByModel, contextWindow);
 		const name = typeof model.name === "string" && model.name.length > 0 ? model.name : model.id;
+		const supportsReasoning = reasoningByModel.has(model.id);
 
 		return {
 			id: model.id,
 			name,
-			reasoning: reasoningByModel.has(model.id),
+			reasoning: supportsReasoning,
 			input: (imageInputByModel.has(model.id) ? ["text", "image"] : ["text"]) as ("text" | "image")[],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow,
 			maxTokens,
+			...(supportsReasoning ? {
+				// Map pi thinking levels to the chat template's reasoning_effort
+				// vocabulary. llama-server renders these into the template, which
+				// picks the effort tier. "off" is omitted (see thinking.enabled).
+				thinkingLevelMap: {
+					minimal: "low",
+					low: "low",
+					medium: "medium",
+					high: "xhigh",
+				},
+				compat: {
+					thinkingFormat: "chat-template" as const,
+					chatTemplateKwargs: {
+						// Toggle the template's enable_thinking (defaults true, so
+						// "off" must explicitly send false to stop thinking).
+						enable_thinking: { $var: "thinking.enabled" as const },
+						// Effort tier; resolved through thinkingLevelMap, omitted at off.
+						reasoning_effort: { $var: "thinking.effort" as const },
+					},
+				},
+			} : {}),
 		};
 	});
 }
