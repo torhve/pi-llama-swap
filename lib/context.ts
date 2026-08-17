@@ -215,6 +215,8 @@ interface RunningModelInfo {
 	ctx?: number;
 	/** Parsed /props for capability detection (vision, reasoning). */
 	props?: LlamaServerProps;
+	/** llama-swap process state ("ready", "starting", "stopping", ...). */
+	state?: string;
 }
 
 /**
@@ -279,7 +281,7 @@ async function loadRunningModelInfo(serverOrigin: string, apiKey?: string): Prom
 				ctx = parseContextFromCmd(proc.cmd);
 			}
 
-			result.set(proc.model, { ctx, props });
+			result.set(proc.model, { ctx, props, state: proc.state });
 		}),
 	);
 
@@ -295,7 +297,7 @@ async function loadRunningModelInfo(serverOrigin: string, apiKey?: string): Prom
  * @param entries - Models from GET /v1/models.
  * @param config - Instance connection settings.
  * @param overrides - Per-model context overrides (highest precedence).
- * @returns Context/max-token/capability maps plus discovered-only caps.
+ * @returns Context/max-token/capability maps, discovered-only caps, and running state per model id.
  */
 export async function buildModelLimits(
 	entries: OpenAIModelEntry[],
@@ -307,10 +309,13 @@ export async function buildModelLimits(
 	imageInputByModel: Map<string, boolean>;
 	reasoningByModel: Map<string, boolean>;
 	detectedByModel: Map<string, ModelCapabilities>;
+	/** llama-swap process state per model id (from GET /running). */
+	runningStateByModel: Map<string, string>;
 }> {
 	const contextByModel = new Map<string, number>();
 	const maxTokensByModel = new Map<string, number>();
 	const detectedByModel = new Map<string, ModelCapabilities>();
+	const runningStateByModel = new Map<string, string>();
 
 	const recordDetected = (id: string, caps: ModelCapabilities): void => {
 		if (Object.keys(caps).length === 0) {
@@ -346,6 +351,8 @@ export async function buildModelLimits(
 		if (info.props) {
 			recordDetected(id, { reasoning: supportsReasoning(info.props), imageInput: supportsImageInput(info.props) });
 		}
+		// Models listed by /running are live upstreams; tag them with their state.
+		runningStateByModel.set(id, info.state ?? "running");
 	}
 
 	// ponyail: cache fills gaps for models not discovered live this pass
@@ -390,7 +397,7 @@ export async function buildModelLimits(
 		}
 	}
 
-	return { contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel, detectedByModel };
+	return { contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel, detectedByModel, runningStateByModel };
 }
 
 /**

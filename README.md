@@ -8,6 +8,7 @@ Pi coding agent extension that registers a **llama-swap** provider and discovers
 - Resolves per-model context from llama-swap APIs (`/v1/models`, `/running`) with 256K default — see [Context window](#context-window-per-model)
 - Enables image input for models whose `/props` response advertises `vision`, `image`, or `multimodal` support
 - Marks models as reasoning-capable (thinking) when `/props` reports `chat_template_caps.supports_preserve_reasoning`
+- Tags models that are running on llama-swap in the `/model` picker name via `GET /running` process state (e.g. `Qwen3-8B [🟢 running]`, `[🟡 starting]`, `[🟠 stopping]`), so you can tell which upstream is loaded at a glance — updates on every refresh
 - Caches discovered capabilities (thinking, vision, context window, max tokens) in the config file so pi knows them between runs, even for models that are not currently running — see [Model capabilities cache](#model-capabilities-cache)
 - For reasoning models, drives the chat template via `chat_template_kwargs` (`enable_thinking` + `reasoning_effort`): off → thinking disabled, minimal/low → `low`, medium → `medium`, high → `xhigh`
 - Uses OpenAI Chat Completions API (`openai-completions`) for streaming

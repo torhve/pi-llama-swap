@@ -31,6 +31,7 @@ const registeredIds = new Set<string>();
  * @param maxTokensByModel - Resolved max output tokens per model id.
  * @param imageInputByModel - Image-input support reported by GET /props per model id.
  * @param reasoningByModel - Reasoning support reported by GET /props per model id.
+ * @param runningStateByModel - llama-swap process state per model id (GET /running).
  * @returns Pi-compatible model configs.
  */
 export function mapOpenAIModelsToPi(
@@ -39,11 +40,16 @@ export function mapOpenAIModelsToPi(
 	maxTokensByModel: Map<string, number>,
 	imageInputByModel: Map<string, boolean>,
 	reasoningByModel: Map<string, boolean>,
+	runningStateByModel?: Map<string, string>,
 ): ProviderModelConfig[] {
 	return entries.map((model) => {
 		const contextWindow = resolveContextWindow(model.id, contextByModel);
 		const maxTokens = resolveMaxTokens(model.id, maxTokensByModel, contextWindow);
-		const name = typeof model.name === "string" && model.name.length > 0 ? model.name : model.id;
+		const baseName = typeof model.name === "string" && model.name.length > 0 ? model.name : model.id;
+		const runState = runningStateByModel?.get(model.id);
+		// pi renders the model name in the /model picker footer and search text;
+		// tagging running models so their upstream state is visible there.
+		const name = runState !== undefined ? `${baseName} [${runStateTag(runState)}]` : baseName;
 		const supportsReasoning = reasoningByModel.has(model.id);
 
 		return {
@@ -77,6 +83,26 @@ export function mapOpenAIModelsToPi(
 			} : {}),
 		};
 	});
+}
+
+/**
+ * Returns the bracketed status tag (icon + text) for a llama-swap process state
+ * shown in model names.
+ * @param state - Process state from GET /running ("ready", "starting", ...).
+ * @returns Tag content, e.g. "🟢 running".
+ */
+function runStateTag(state: string): string {
+	switch (state) {
+		case "ready":
+		case "running":
+			return "🟢 running";
+		case "starting":
+			return "🟡 starting";
+		case "stopping":
+			return "🟠 stopping";
+		default:
+			return `⚪ ${state}`;
+	}
 }
 
 /**
@@ -134,12 +160,12 @@ async function refreshInstance(
 		}
 		// Initial load probes only models already running (no model swaps), so
 		// reasoning/vision/context flags are correct before the first request.
-		const { contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel, detectedByModel } = await buildModelLimits(
+		const { contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel, detectedByModel, runningStateByModel } = await buildModelLimits(
 			entries,
 			instance,
 			instance.contextOverrides,
-		);
-		const models = mapOpenAIModelsToPi(entries, contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel);
+			);
+		const models = mapOpenAIModelsToPi(entries, contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel, runningStateByModel);
 
 		if (registeredIds.has(instance.id)) {
 			pi.unregisterProvider(instance.id);
