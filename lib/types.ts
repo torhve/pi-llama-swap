@@ -18,11 +18,28 @@ export interface LlamaSwapInstance {
 	apiKey?: string;
 	/** Per-model context window overrides (model id -> tokens). */
 	contextOverrides?: Record<string, number>;
+	/** Cached per-model capabilities discovered from llama-swap (model id -> caps). */
+	modelCapabilities?: Record<string, ModelCapabilities>;
 }
 
 /** Extension config: one or more llama-swap instances. */
 export interface LlamaSwapConfig {
 	instances: LlamaSwapInstance[];
+}
+
+/**
+ * Discovered capabilities for one model, cached in the config file between runs.
+ * All fields optional: only values actually discovered are stored.
+ */
+export interface ModelCapabilities {
+	/** Chat template supports reasoning (thinking). */
+	reasoning?: boolean;
+	/** Model accepts image input. */
+	imageInput?: boolean;
+	/** Discovered context window in tokens. */
+	contextWindow?: number;
+	/** Discovered max output tokens. */
+	maxTokens?: number;
 }
 
 /** OpenAI-compatible model entry from GET /v1/models. */

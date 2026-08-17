@@ -8,6 +8,7 @@ Pi coding agent extension that registers a **llama-swap** provider and discovers
 - Resolves per-model context from llama-swap APIs (`/v1/models`, `/running`) with 256K default — see [Context window](#context-window-per-model)
 - Enables image input for models whose `/props` response advertises `vision`, `image`, or `multimodal` support
 - Marks models as reasoning-capable (thinking) when `/props` reports `chat_template_caps.supports_preserve_reasoning`
+- Caches discovered capabilities (thinking, vision, context window, max tokens) in the config file so pi knows them between runs, even for models that are not currently running — see [Model capabilities cache](#model-capabilities-cache)
 - For reasoning models, drives the chat template via `chat_template_kwargs` (`enable_thinking` + `reasoning_effort`): off → thinking disabled, minimal/low → `low`, medium → `medium`, high → `xhigh`
 - Uses OpenAI Chat Completions API (`openai-completions`) for streaming
 - Reads optional config from `~/.pi/agent/pi-llama-swap.json` to override defaults
@@ -91,17 +92,30 @@ Multiple llama-swap servers — use the `instances` array. Each entry registers 
 | `basePath` | API path prefix (default `/v1`; normalized to end with `/v1`) |
 | `apiKey` | Bearer token when llama-swap uses `apiKeys` |
 | `contextOverrides` | Per-model context overrides (model id → tokens). Use `/llama-swap-set-context-length` instead of editing manually. |
+| `modelCapabilities` | Auto-generated cache of discovered capabilities (model id → `{reasoning, imageInput, contextWindow, maxTokens}`). Written by the extension; safe to edit or delete. |
 
 Load order: **defaults → `~/.pi/agent/pi-llama-swap.json` → environment variables**.
 
 ### Context window (per model)
 
-Context size is auto-detected from llama-swap's `/v1/models` and `/running` endpoints at startup, with a default of **256K** when nothing reports a value. User overrides set via `/llama-swap-set-context-length` take precedence over all auto-detected values.
+Context size is auto-detected from llama-swap's `/v1/models` and `/running` endpoints, with previously discovered values cached in `modelCapabilities` filling in for models that are not running, and a default of **256K** when nothing reports a value. User overrides set via `/llama-swap-set-context-length` take precedence over all auto-detected values.
 
 ```bash
 # Restrict permissions when storing API keys
 chmod 600 ~/.pi/agent/pi-llama-swap.json
 ```
+
+### Model capabilities cache
+
+Discovered per-model capabilities — reasoning (thinking) support, image input, context window, and max output tokens — are cached in the config file under `modelCapabilities` (per instance). The cache is:
+
+- **Written** on every successful provider refresh: at startup (for models already running) and after the first response of each model (once it is loaded and `/props` is readable).
+- **Used** at startup for models that are not currently running, so pi knows e.g. thinking support *before* the first request.
+- **Merged** per field: previously cached fields are kept unless re-discovered.
+
+Precedence (highest wins): user `contextOverrides` > live detection (`/running` + `/props`) > cache > defaults (256K context; max tokens default to half the context window, since servers typically run llama.cpp with `n_predict -1`).
+
+You can delete the `modelCapabilities` block at any time — it rebuilds as models are used.
 
 ### Environment variables
 

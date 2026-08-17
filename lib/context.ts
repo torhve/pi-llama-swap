@@ -2,13 +2,12 @@
  * Resolve per-model context windows from llama-swap HTTP APIs only.
  */
 
-import type { LlamaSwapInstance, OpenAIModelEntry } from "./types.js";
+import type { LlamaSwapInstance, ModelCapabilities, OpenAIModelEntry } from "./types.js";
 import { buildServerOrigin } from "./url.js";
 
 /** Default context when llama-swap APIs do not report one (256K). */
 export const DEFAULT_CONTEXT_WINDOW = 262_144;
 
-const DEFAULT_MAX_TOKENS = 8192;
 const REQUEST_TIMEOUT_MS = 5_000;
 
 /** Running process entry from GET /running. */
@@ -289,9 +288,14 @@ async function loadRunningModelInfo(serverOrigin: string, apiKey?: string): Prom
 
 /**
  * Builds per-model context and max-token maps from llama-swap APIs.
+ * Merges the cached capabilities from the config file for models not
+ * discovered live this pass (precedence: /v1/models entry < live /running +
+ * /props < cache < user overrides). Also reports only the values actually
+ * discovered this pass (`detectedByModel`) so callers can persist them.
  * @param entries - Models from GET /v1/models.
  * @param config - Instance connection settings.
- * @returns Context and max-token maps keyed by model id.
+ * @param overrides - Per-model context overrides (highest precedence).
+ * @returns Context/max-token/capability maps plus discovered-only caps.
  */
 export async function buildModelLimits(
 	entries: OpenAIModelEntry[],
@@ -302,18 +306,29 @@ export async function buildModelLimits(
 	maxTokensByModel: Map<string, number>;
 	imageInputByModel: Map<string, boolean>;
 	reasoningByModel: Map<string, boolean>;
+	detectedByModel: Map<string, ModelCapabilities>;
 }> {
 	const contextByModel = new Map<string, number>();
 	const maxTokensByModel = new Map<string, number>();
+	const detectedByModel = new Map<string, ModelCapabilities>();
+
+	const recordDetected = (id: string, caps: ModelCapabilities): void => {
+		if (Object.keys(caps).length === 0) {
+			return;
+		}
+		detectedByModel.set(id, { ...detectedByModel.get(id), ...caps });
+	};
 
 	for (const entry of entries) {
 		const fromEntry = extractContextFromModelEntry(entry);
 		if (fromEntry) {
 			contextByModel.set(entry.id, fromEntry);
+			recordDetected(entry.id, { contextWindow: fromEntry });
 		}
 		const maxOut = extractMaxTokensFromModelEntry(entry);
 		if (maxOut) {
 			maxTokensByModel.set(entry.id, maxOut);
+			recordDetected(entry.id, { maxTokens: maxOut });
 		}
 	}
 
@@ -325,6 +340,25 @@ export async function buildModelLimits(
 		if (!skipModels?.has(id) && info.ctx) {
 			contextByModel.set(id, info.ctx);
 		}
+		if (info.ctx) {
+			recordDetected(id, { contextWindow: info.ctx });
+		}
+		if (info.props) {
+			recordDetected(id, { reasoning: supportsReasoning(info.props), imageInput: supportsImageInput(info.props) });
+		}
+	}
+
+	// ponyail: cache fills gaps for models not discovered live this pass
+	const cached = config.modelCapabilities;
+	if (cached) {
+		for (const [id, caps] of Object.entries(cached)) {
+			if (caps.contextWindow !== undefined && !contextByModel.has(id)) {
+				contextByModel.set(id, caps.contextWindow);
+			}
+			if (caps.maxTokens !== undefined && !maxTokensByModel.has(id)) {
+				maxTokensByModel.set(id, caps.maxTokens);
+			}
+		}
 	}
 
 	// ponyail: user overrides beat all discovered values
@@ -333,18 +367,30 @@ export async function buildModelLimits(
 			contextByModel.set(id, ctx);
 		}
 	}
-	const imageInputByModel = new Map(
-		[...running]
-			.filter(([, info]) => info.props && supportsImageInput(info.props))
-			.map(([id]) => [id, true] as const),
-	);
+
 	const reasoningByModel = new Map(
 		[...running]
 			.filter(([, info]) => info.props && supportsReasoning(info.props))
 			.map(([id]) => [id, true] as const),
 	);
+	const imageInputByModel = new Map(
+		[...running]
+			.filter(([, info]) => info.props && supportsImageInput(info.props))
+			.map(([id]) => [id, true] as const),
+	);
+	// ponyail: cached capabilities apply to models not running this pass
+	if (cached) {
+		for (const [id, caps] of Object.entries(cached)) {
+			if (caps.reasoning === true && !reasoningByModel.has(id)) {
+				reasoningByModel.set(id, true);
+			}
+			if (caps.imageInput === true && !imageInputByModel.has(id)) {
+				imageInputByModel.set(id, true);
+			}
+		}
+	}
 
-	return { contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel };
+	return { contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel, detectedByModel };
 }
 
 /**
@@ -359,6 +405,10 @@ export function resolveContextWindow(modelId: string, contextByModel: Map<string
 
 /**
  * Resolves max output tokens for a model id.
+ * Defaults to half the context window: llama-swap servers typically run
+ * llama.cpp with `n_predict -1` (unlimited output), so the real limit is
+ * context space. A fixed small cap would also suppress pi's compact-and-retry
+ * overflow recovery for long truncated responses.
  * @param modelId - Model identifier.
  * @param maxTokensByModel - Resolved max-token map.
  * @param contextWindow - Model context window.
@@ -372,5 +422,5 @@ export function resolveMaxTokens(
 	if (maxTokensByModel.has(modelId)) {
 		return maxTokensByModel.get(modelId)!;
 	}
-	return Math.min(DEFAULT_MAX_TOKENS, Math.floor(contextWindow / 4));
+	return Math.floor(contextWindow / 2);
 }

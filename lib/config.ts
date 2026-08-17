@@ -2,7 +2,7 @@
  * Load llama-swap extension configuration from ~/.pi/agent/pi-llama-swap.json.
  *
  * Supports one or more llama-swap instances:
- *   - Legacy shape (single): top-level origin/port/basePath/apiKey/contextOverrides.
+ *   - Legacy shape (single): top-level origin/port/basePath/apiKey/contextOverrides/modelCapabilities.
  *   - Multi shape: `instances` array, each entry optionally setting `id` and
  *     `name` plus the connection fields above.
  */
@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { defaultInstance, mergeConfig, parsePortArg, parseUrlArg } from "./url.js";
-import type { LlamaSwapConfig, LlamaSwapInstance } from "./types.js";
+import type { LlamaSwapConfig, LlamaSwapInstance, ModelCapabilities } from "./types.js";
 
 const CONFIG_FILENAME = "pi-llama-swap.json";
 
@@ -48,6 +48,21 @@ async function readConfigFile(path: string): Promise<Record<string, unknown> | n
 }
 
 /**
+ * Serializes read-modify-write cycles on the config file so concurrent saves
+ * (e.g. parallel instance refreshes) cannot lose updates.
+ */
+let configWriteChain: Promise<void> = Promise.resolve();
+
+function withConfigFileLock<T>(fn: () => Promise<T>): Promise<T> {
+	const run = configWriteChain.then(fn);
+	configWriteChain = run.then(
+		() => undefined,
+		() => undefined,
+	);
+	return run;
+}
+
+/**
  * Validates and normalizes one raw instance entry (connection fields only).
  * @param raw - Raw instance object from JSON.
  * @returns Normalized connection fragment.
@@ -70,6 +85,10 @@ function normalizeConnection(raw: Record<string, unknown>): Partial<LlamaSwapIns
 	if (overrides) {
 		out.contextOverrides = overrides;
 	}
+	const capabilities = normalizeCapabilities(raw.modelCapabilities);
+	if (capabilities) {
+		out.modelCapabilities = capabilities;
+	}
 	return out;
 }
 
@@ -89,6 +108,41 @@ function normalizeOverrides(value: unknown): Record<string, number> | undefined 
 		}
 	}
 	return Object.keys(overrides).length > 0 ? overrides : undefined;
+}
+
+/**
+ * Validates and normalizes a model-capabilities map.
+ * @param value - Raw modelCapabilities value.
+ * @returns Normalized map or undefined when empty/invalid.
+ */
+function normalizeCapabilities(value: unknown): Record<string, ModelCapabilities> | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const out: Record<string, ModelCapabilities> = {};
+	for (const [model, raw] of Object.entries(value)) {
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+			continue;
+		}
+		const entry: ModelCapabilities = {};
+		const record = raw as Record<string, unknown>;
+		if (typeof record.reasoning === "boolean") {
+			entry.reasoning = record.reasoning;
+		}
+		if (typeof record.imageInput === "boolean") {
+			entry.imageInput = record.imageInput;
+		}
+		if (typeof record.contextWindow === "number" && Number.isInteger(record.contextWindow) && record.contextWindow > 0) {
+			entry.contextWindow = record.contextWindow;
+		}
+		if (typeof record.maxTokens === "number" && Number.isInteger(record.maxTokens) && record.maxTokens > 0) {
+			entry.maxTokens = record.maxTokens;
+		}
+		if (Object.keys(entry).length > 0) {
+			out[model] = entry;
+		}
+	}
+	return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**
@@ -191,6 +245,17 @@ export async function loadConfig(): Promise<LlamaSwapConfig> {
  * @param ctxSize - Context size in tokens, or undefined to remove the override.
  */
 export async function saveContextOverride(instanceId: string, model: string, ctxSize: number | undefined): Promise<void> {
+	await withConfigFileLock(() => saveContextOverrideLocked(instanceId, model, ctxSize));
+}
+
+/**
+ * Updates the context-overrides map for a model in the config file.
+ * Unlocked variant: callers must hold the config file lock.
+ * @param instanceId - Provider id of the instance to update.
+ * @param model - Model id to set or clear.
+ * @param ctxSize - Context size in tokens, or undefined to remove the override.
+ */
+async function saveContextOverrideLocked(instanceId: string, model: string, ctxSize: number | undefined): Promise<void> {
 	const path = configPath();
 	let current: Record<string, unknown> = {};
 	try {
@@ -224,6 +289,60 @@ export async function saveContextOverride(instanceId: string, model: string, ctx
 			overrides[model] = ctxSize;
 		}
 		current.contextOverrides = overrides;
+	}
+
+	await writeFile(path, JSON.stringify(current, null, 2), "utf8");
+}
+
+/**
+ * Merges discovered model capabilities into the config file for an instance.
+ * Per-field merge: previously cached fields are kept when absent from `caps`.
+ * @param instanceId - Provider id of the instance to update.
+ * @param caps - Discovered capabilities per model id.
+ */
+export async function saveModelCapabilities(instanceId: string, caps: Record<string, ModelCapabilities>): Promise<void> {
+	if (Object.keys(caps).length === 0) {
+		return;
+	}
+	await withConfigFileLock(() => saveModelCapabilitiesLocked(instanceId, caps));
+}
+
+/**
+ * Writes merged capabilities to the config file.
+ * Unlocked variant: callers must hold the config file lock.
+ * @param instanceId - Provider id of the instance to update.
+ * @param caps - Discovered capabilities per model id.
+ */
+async function saveModelCapabilitiesLocked(instanceId: string, caps: Record<string, ModelCapabilities>): Promise<void> {
+	const path = configPath();
+	let current: Record<string, unknown> = {};
+	try {
+		const raw = await readFile(path, "utf8");
+		current = JSON.parse(raw) as Record<string, unknown>;
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+	}
+
+	const mergeInto = (target: Record<string, unknown>): void => {
+		const existing = normalizeCapabilities(target.modelCapabilities) ?? {};
+		for (const [model, discovered] of Object.entries(caps)) {
+			existing[model] = { ...existing[model], ...discovered };
+		}
+		target.modelCapabilities = existing;
+	};
+
+	if (Array.isArray(current.instances)) {
+		const list = current.instances as Record<string, unknown>[];
+		let entry = list.find((item) => item && item.id === instanceId);
+		if (!entry) {
+			entry = { id: instanceId };
+			list.push(entry);
+		}
+		mergeInto(entry);
+		current.instances = list;
+	} else {
+		// Legacy single-instance shape.
+		mergeInto(current);
 	}
 
 	await writeFile(path, JSON.stringify(current, null, 2), "utf8");

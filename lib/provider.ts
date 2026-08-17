@@ -9,7 +9,7 @@ import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-codin
 import { buildModelLimits, resolveContextWindow, resolveMaxTokens } from "./context.js";
 import { fetchModels, LlamaSwapClientError } from "./client.js";
 import { buildBaseUrl } from "./url.js";
-import { DEFAULT_INSTANCE_ID } from "./config.js";
+import { DEFAULT_INSTANCE_ID, saveModelCapabilities } from "./config.js";
 import type { LlamaSwapConfig, LlamaSwapInstance, OpenAIModelEntry, RefreshResult } from "./types.js";
 
 /** Provider id of the first (default) instance. */
@@ -134,7 +134,7 @@ async function refreshInstance(
 		}
 		// Initial load probes only models already running (no model swaps), so
 		// reasoning/vision/context flags are correct before the first request.
-		const { contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel } = await buildModelLimits(
+		const { contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel, detectedByModel } = await buildModelLimits(
 			entries,
 			instance,
 			instance.contextOverrides,
@@ -145,6 +145,17 @@ async function refreshInstance(
 			pi.unregisterProvider(instance.id);
 		}
 		registerLlamaSwapProvider(pi, instance, models);
+
+		// ponyail: persist discovered capabilities so non-running models keep
+		// them on the next run (e.g. thinking support before the first request).
+		if (detectedByModel.size > 0) {
+			try {
+				await saveModelCapabilities(instance.id, Object.fromEntries(detectedByModel));
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				console.warn(`[llama-swap] failed to cache model capabilities: ${message}`);
+			}
+		}
 
 		return { baseUrl, modelCount: models.length };
 	} catch (err) {
