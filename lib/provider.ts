@@ -170,16 +170,32 @@ async function refreshInstance(
 	}
 }
 
+/** In-flight refresh so concurrent callers share one unregister/register pass. */
+let inflightRefresh: Promise<RefreshResult> | undefined;
+
 /**
  * Refreshes all configured llama-swap providers.
  * On failure of one instance, others still refresh; the returned result
  * reports per-instance errors and the total model count.
+ * Concurrent calls share a single in-flight refresh so interleaved
+ * unregister/register sequences cannot race.
  * @param pi - Pi extension API.
  * @param config - Effective connection settings (one or more instances).
  * @param options - `isInitial`: first load; may register empty providers on failure.
  * @returns Aggregate refresh outcome.
  */
-export async function refreshProvider(
+export function refreshProvider(
+	pi: ExtensionAPI,
+	config: LlamaSwapConfig,
+	options?: { isInitial?: boolean },
+): Promise<RefreshResult> {
+	inflightRefresh ??= doRefreshProvider(pi, config, options).finally(() => {
+		inflightRefresh = undefined;
+	});
+	return inflightRefresh;
+}
+
+async function doRefreshProvider(
 	pi: ExtensionAPI,
 	config: LlamaSwapConfig,
 	options?: { isInitial?: boolean },
