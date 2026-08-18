@@ -4,8 +4,13 @@
   "description": "Pi extension: llama-swap provider with dynamic model discovery",
   "type": "module",
   "scripts": {
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "vitest run"
   },
+  "files": [
+    "index.ts",
+    "lib"
+  ],
   "pi": {
     "extensions": [
       "./index.ts"
@@ -16,7 +21,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.11"
   },
   "main": "index.ts",
   "directories": {

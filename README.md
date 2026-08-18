@@ -161,6 +161,23 @@ pi-llama-swap/
 └── README.md
 ```
 
+## Testing
+
+The extension ships with a [Vitest](https://vitest.dev) unit-test suite under `tests/` — one file per module in `lib/` plus the extension entry. Tests assert the *intent* of each function (its documented contract and edge cases), not merely that the current implementation passes, so a behaviour change that breaks a contract fails the suite.
+
+```bash
+npm test        # run the full suite
+npm run check   # type-check (tsc --noEmit)
+```
+
+Strategy:
+
+- **Pure functions** (`lib/url.ts`, the resolvers and mappers in `lib/context.ts`) are tested directly against their contracts, including edge cases (out-of-range ports, malformed entries, numeric-string coercion).
+- **External boundaries are mocked, never hit for real:** global `fetch` is stubbed for the model client and the `/running`/`/props` probes, `node:fs/promises` + `node:os` for the config file, and `vi.mock` covers the `client`/`config`/`provider` module seams. No test touches the network, the real filesystem, or a live llama-swap.
+- **Stateful modules** (`config.ts`, `provider.ts`, `index.ts`) hold module-level singletons (write lock, in-flight refresh, warned-once flag). Tests reset module state with `vi.resetModules()` and re-import fresh instances so that state cannot leak between tests.
+
+`tests/`, `vitest.config.ts`, and `TODO.md` are excluded from the published npm package via the `files` field in `package.json`.
+
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE).
