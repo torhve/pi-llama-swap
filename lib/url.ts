@@ -64,7 +64,7 @@ export function buildBaseUrl(config: LlamaSwapInstance): string {
 }
 
 /**
- * Parses a `/llama-swap-url` argument into origin, optional port, and API base path.
+ * Parses a URL argument into origin, optional port, and API base path.
  * @param arg - User input (scheme+host, host only, or URL with optional path).
  * @returns Parsed connection fields.
  * @throws {Error} When the argument is empty or not a valid URL.
@@ -72,7 +72,7 @@ export function buildBaseUrl(config: LlamaSwapInstance): string {
 export function parseUrlArg(arg: string): { origin: string; port?: number; basePath?: string } {
 	const trimmed = arg.trim();
 	if (!trimmed) {
-		throw new Error("URL is required. Example: /llama-swap-url http://127.0.0.1");
+		throw new Error("URL is required. Example: http://127.0.0.1");
 	}
 
 	let raw = trimmed;
@@ -103,7 +103,7 @@ export function parseUrlArg(arg: string): { origin: string; port?: number; baseP
 }
 
 /**
- * Parses a `/llama-swap-port` argument into a valid port number.
+ * Parses a port argument into a valid port number.
  * @param arg - Port string (1–65535).
  * @returns Valid port number.
  * @throws {Error} When the port is missing or invalid.
@@ -111,7 +111,7 @@ export function parseUrlArg(arg: string): { origin: string; port?: number; baseP
 export function parsePortArg(arg: string): number {
 	const trimmed = arg.trim();
 	if (!trimmed) {
-		throw new Error("Port is required. Example: /llama-swap-port 8080");
+		throw new Error("Port is required. Example: 8080");
 	}
 
 	const port = Number(trimmed);

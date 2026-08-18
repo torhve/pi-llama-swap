@@ -16,9 +16,8 @@ Pi coding agent extension that registers a **llama-swap** provider and discovers
 
 ## Requirements
 
-- [pi](https://github.com/badlogic/pi-mono) coding agent (`@earendil-works/pi-coding-agent`)
+- [pi](https://github.com/earendil-works/pi) coding agent (`@earendil-works/pi-coding-agent`) — see its docs for the Node.js requirement
 - [llama-swap](https://github.com/mostlygeek/llama-swap) running and reachable
-- Node.js 18+ (for `fetch`)
 
 ## Quick start
 
@@ -37,6 +36,7 @@ In pi: `/model` → pick `llama-swap/your-model-id`.
 
 | Command | Args | Description |
 |---------|------|-------------|
+| `/llama-swap-refresh` | — | Re-probe running llama-swap models and re-register capability flags (reasoning, vision, context). Also re-reads the config file, so no restart is needed after edits. |
 | `/llama-swap-set-context-length` | `<number>` or `auto` | Override context window for the current model (`auto` removes override and uses auto-detection) |
 
 Verify from CLI:
@@ -101,11 +101,6 @@ Load order: **defaults → `~/.pi/agent/pi-llama-swap.json` → environment vari
 
 Context size is auto-detected from llama-swap's `/v1/models` and `/running` endpoints, with previously discovered values cached in `modelCapabilities` filling in for models that are not running, and a default of **256K** when nothing reports a value. User overrides set via `/llama-swap-set-context-length` take precedence over all auto-detected values.
 
-```bash
-# Restrict permissions when storing API keys
-chmod 600 ~/.pi/agent/pi-llama-swap.json
-```
-
 ### Model capabilities cache
 
 Discovered per-model capabilities — reasoning (thinking) support, image input, context window, and max output tokens — are cached in the config file under `modelCapabilities` (per instance). The cache is:
@@ -114,7 +109,7 @@ Discovered per-model capabilities — reasoning (thinking) support, image input,
 - **Used** at startup for models that are not currently running, so pi knows e.g. thinking support *before* the first request.
 - **Merged** per field: previously cached fields are kept unless re-discovered.
 
-Precedence (highest wins): user `contextOverrides` > live detection (`/running` + `/props`) > cache > defaults (256K context; max tokens default to half the context window, since servers typically run llama.cpp with `n_predict -1`).
+Precedence (highest wins): user `contextOverrides` > live detection (`/running` + `/props`) > `/v1/models` entries > cache > defaults (256K context; max tokens default to half the context window, since servers typically run llama.cpp with `n_predict -1`).
 
 You can delete the `modelCapabilities` block at any time — it rebuilds as models are used.
 
@@ -134,6 +129,12 @@ If llama-swap uses `apiKeys` in its config, set `"apiKey"` in `pi-llama-swap.jso
 
 Without a key, extension uses placeholder `local-no-auth` so models appear in `/model`. Pi may send `Authorization: Bearer local-no-auth`; most unsecured local installs ignore it.
 
+When the config file stores API keys, restrict its permissions:
+
+```bash
+chmod 600 ~/.pi/agent/pi-llama-swap.json
+```
+
 ## Troubleshooting
 
 | Symptom | What to try |
@@ -142,7 +143,7 @@ Without a key, extension uses placeholder `local-no-auth` so models appear in `/
 | HTTP 401 | Set `apiKey` in config or `LLAMA_SWAP_API_KEY` |
 | 0 models | Ensure models in llama-swap config; `curl http://127.0.0.1:8080/v1/models` |
 | Extension loads but chat fails | Confirm model id; first request may load model (slow) |
-| Config ignored | File must be `~/.pi/agent/pi-llama-swap.json`; restart pi after edits |
+| Config ignored | File must be `~/.pi/agent/pi-llama-swap.json`; run `/llama-swap-refresh` after edits (or `/reload`/restart pi) |
 
 ## Project layout
 
@@ -162,4 +163,4 @@ pi-llama-swap/
 
 ## License
 
-MIT (see repository if published).
+Apache-2.0 — see [LICENSE](LICENSE).

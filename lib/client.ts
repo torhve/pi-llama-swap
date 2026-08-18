@@ -68,7 +68,7 @@ export async function fetchModels(
 		const body = await response.text().catch(() => "");
 		const hint =
 			response.status === 401
-				? " Set API key via /llama-swap-api-key or LLAMA_SWAP_API_KEY."
+				? " Set apiKey in ~/.pi/agent/pi-llama-swap.json or via LLAMA_SWAP_API_KEY."
 				: "";
 		throw new LlamaSwapClientError(
 			`llama-swap returned ${response.status} ${response.statusText}${body ? `: ${body.slice(0, 200)}` : ""}${hint}`,
