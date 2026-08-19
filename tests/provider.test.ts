@@ -284,6 +284,48 @@ describe("refreshProvider", () => {
 		expect(result.error).toBe("http://127.0.0.1:9000/v1: second instance down");
 	});
 
+	it("reports observed running states keyed by instance id", async () => {
+		const { provider, client } = await loadFresh();
+		client.fetchModels.mockResolvedValue([createEntry({ id: "model-1" })]);
+		mockFetch((url) => {
+			if (String(url).endsWith("/running")) {
+				return jsonResponse({ running: [{ model: "model-1", state: "starting" }] });
+			}
+			return jsonResponse({});
+		});
+		const pi = createMockPi();
+
+		const result = await provider.refreshProvider(pi as unknown as ExtensionAPI, { instances: [createInstance()] });
+
+		expect(result.runningStates).toEqual({ "llama-swap:model-1": "starting" });
+	});
+
+	it("aggregates running states across instances with prefixed keys", async () => {
+		const { provider, client } = await loadFresh();
+		client.fetchModels.mockImplementation((baseUrl: string) => {
+			return Promise.resolve([createEntry({ id: "model-1" })]);
+		});
+		mockFetch((url) => {
+			const target = String(url);
+			if (target.endsWith("/running")) {
+				const state = target.includes(":8080") ? "ready" : "starting";
+				return jsonResponse({ running: [{ model: "model-1", state }] });
+			}
+			return jsonResponse({});
+		});
+		const pi = createMockPi();
+		const config: { instances: LlamaSwapInstance[] } = {
+			instances: [createInstance({ id: "llama-swap", port: 8080 }), createInstance({ id: "llama-swap-2", port: 9000 })],
+		};
+
+		const result = await provider.refreshProvider(pi as unknown as ExtensionAPI, config);
+
+		expect(result.runningStates).toEqual({
+			"llama-swap:model-1": "ready",
+			"llama-swap-2:model-1": "starting",
+		});
+	});
+
 	it("shares a single in-flight refresh across concurrent calls", async () => {
 		const { provider, client } = await loadFresh();
 		let resolveFetch: (v: unknown) => void = () => {};

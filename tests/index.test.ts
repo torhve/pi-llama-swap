@@ -67,7 +67,7 @@ describe("after_provider_response", () => {
 		expect(refreshProviderMock.mock.calls.length).toBe(base);
 	});
 
-	it("refreshes a matching instance once per (provider, model)", async () => {
+	it("settles after a refresh that does not observe a transient state", async () => {
 		const pi = await boot();
 		const base = refreshProviderMock.mock.calls.length;
 		const ctx = createMockCtx(undefined, { provider: "llama-swap", id: "model-1" });
@@ -75,9 +75,40 @@ describe("after_provider_response", () => {
 		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
 		expect(refreshProviderMock.mock.calls.length).toBe(base + 1);
 
-		// Same (provider, model) again → deduplicated, no new refresh.
+		// Settled (no transient state observed) → deduplicated, no new refresh.
 		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
 		expect(refreshProviderMock.mock.calls.length).toBe(base + 1);
+	});
+
+	it("re-refreshes while the model is still starting, settling once it is ready", async () => {
+		const pi = await boot();
+		refreshProviderMock
+			.mockResolvedValueOnce({ ...OK_REFRESH, runningStates: { "llama-swap:model-1": "starting" } })
+			.mockResolvedValueOnce({ ...OK_REFRESH, runningStates: { "llama-swap:model-1": "ready" } });
+		const base = refreshProviderMock.mock.calls.length;
+		const ctx = createMockCtx(undefined, { provider: "llama-swap", id: "model-1" });
+
+		// First response: upstream still starting → not settled.
+		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
+		expect(refreshProviderMock.mock.calls.length).toBe(base + 1);
+
+		// Next response re-checks; upstream now ready → settled.
+		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
+		expect(refreshProviderMock.mock.calls.length).toBe(base + 2);
+
+		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
+		expect(refreshProviderMock.mock.calls.length).toBe(base + 2);
+	});
+
+	it("re-refreshes on the next response while the model is stopping", async () => {
+		const pi = await boot();
+		refreshProviderMock.mockResolvedValueOnce({ ...OK_REFRESH, runningStates: { "llama-swap:model-1": "stopping" } });
+		const base = refreshProviderMock.mock.calls.length;
+		const ctx = createMockCtx(undefined, { provider: "llama-swap", id: "model-1" });
+
+		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
+		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
+		expect(refreshProviderMock.mock.calls.length).toBe(base + 2);
 	});
 
 	it("retries on the next response when the refresh reports an error", async () => {

@@ -60,4 +60,6 @@ export interface RefreshResult {
 	baseUrl: string;
 	modelCount: number;
 	error?: string;
+	/** Observed llama-swap process state per model, keyed `${instanceId}:${modelId}`. */
+	runningStates?: Record<string, string>;
 }

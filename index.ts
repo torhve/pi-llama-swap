@@ -44,8 +44,8 @@ async function loadConfigSafe(
 export default async function llamaSwapExtension(pi: ExtensionAPI): Promise<void> {
 	const initialConfig = await loadConfig();
 	const result = await refreshProvider(pi, initialConfig, { isInitial: true });
-	/** Provider id → model id already refreshed with context limits. */
-	let contextRefreshedForModel = new Map<string, string>();
+	/** Provider id → model id whose status tag has settled on a stable state. */
+	let settledModelByProvider = new Map<string, string>();
 
 	if (result.error) {
 		console.warn(`[llama-swap] ${result.error}`);
@@ -54,6 +54,9 @@ export default async function llamaSwapExtension(pi: ExtensionAPI): Promise<void
 	// A llama-swap upstream is started by the first provider request. Refresh
 	// once its response headers arrive so `/running` exposes the proxy and we
 	// can read the actual llama-server `/props` n_ctx for subsequent requests.
+	// llama-swap may flip `/running` to "ready" slightly after the first
+	// response arrives, so a refresh that still sees "starting" re-checks on
+	// the next response until the tag catches up (see settled latch below).
 	pi.on("after_provider_response", async (_event, ctx) => {
 		const model = ctx.model;
 		if (!model) {
@@ -64,15 +67,21 @@ export default async function llamaSwapExtension(pi: ExtensionAPI): Promise<void
 			return;
 		}
 		const instance = config.instances.find((inst) => inst.id === model.provider);
-		if (!instance || model.id === contextRefreshedForModel.get(model.provider)) {
+		if (!instance || model.id === settledModelByProvider.get(model.provider)) {
 			return;
 		}
 
 		const refresh = await refreshProvider(pi, config);
-		if (!refresh.error) {
-			contextRefreshedForModel.set(model.provider, model.id);
-		} else {
+		if (refresh.error) {
 			console.warn(`[llama-swap] post-response refresh failed (will retry next response): ${refresh.error}`);
+			return;
+		}
+		// Settle only once the model's process state is stable. A transient
+		// state (starting/stopping) keeps re-checking on the next response so
+		// the `[starting]` tag does not stick once the upstream is ready.
+		const state = refresh.runningStates?.[`${model.provider}:${model.id}`];
+		if (state !== "starting" && state !== "stopping") {
+			settledModelByProvider.set(model.provider, model.id);
 		}
 	});
 

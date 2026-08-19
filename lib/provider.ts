@@ -183,7 +183,11 @@ async function refreshInstance(
 			}
 		}
 
-		return { baseUrl, modelCount: models.length };
+		const runningStates: Record<string, string> = {};
+		for (const [modelId, state] of runningStateByModel) {
+			runningStates[`${instance.id}:${modelId}`] = state;
+		}
+		return { baseUrl, modelCount: models.length, runningStates };
 	} catch (err) {
 		const message = err instanceof LlamaSwapClientError ? err.message : err instanceof Error ? err.message : String(err);
 
@@ -234,9 +238,15 @@ async function doRefreshProvider(
 			? errors.map((r) => `${r.baseUrl}: ${r.error}`).join("; ")
 			: undefined;
 
+	const runningStates: Record<string, string> = {};
+	for (const r of results) {
+		Object.assign(runningStates, r.runningStates);
+	}
+
 	return {
 		baseUrl: results.map((r) => r.baseUrl).join(", "),
 		modelCount: results.reduce((sum, r) => sum + r.modelCount, 0),
 		error,
+		runningStates,
 	};
 }
