@@ -113,7 +113,7 @@ describe("after_provider_response", () => {
 
 	it("retries on the next response when the refresh reports an error", async () => {
 		loadConfigMock.mockResolvedValue({ instances: [createInstance()] });
-		refreshProviderMock.mockResolvedValue({ ...OK_REFRESH, error: "boom" });
+		refreshProviderMock.mockResolvedValue({ ...OK_REFRESH, error: "http://127.0.0.1:8080/v1: boom", errorsByInstance: { "llama-swap": "boom" } });
 		const pi = createMockPi();
 		await llamaSwapExtension(pi as unknown as ExtensionAPI);
 		const base = refreshProviderMock.mock.calls.length;
@@ -124,6 +124,91 @@ describe("after_provider_response", () => {
 		expect(refreshProviderMock.mock.calls.length).toBe(base + 1);
 		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
 		expect(refreshProviderMock.mock.calls.length).toBe(base + 2);
+	});
+
+	it("settles when own instance is healthy even if a sibling instance errored", async () => {
+		loadConfigMock.mockResolvedValue({
+			instances: [createInstance({ id: "llama-swap", port: 8080 }), createInstance({ id: "llama-swap-2", port: 9000 })],
+		});
+		refreshProviderMock.mockResolvedValue({
+			...OK_REFRESH,
+			error: "http://127.0.0.1:9000/v1: sibling down",
+			errorsByInstance: { "llama-swap-2": "sibling down" },
+		});
+		const pi = createMockPi();
+		await llamaSwapExtension(pi as unknown as ExtensionAPI);
+		const base = refreshProviderMock.mock.calls.length;
+		const ctx = createMockCtx(undefined, { provider: "llama-swap", id: "model-1" });
+
+		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
+		expect(refreshProviderMock.mock.calls.length).toBe(base + 1);
+
+		// Settled by own-instance health → no re-probe on the next response.
+		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
+		expect(refreshProviderMock.mock.calls.length).toBe(base + 1);
+	});
+
+	it("keeps re-probing on every response while own instance is down", async () => {
+		loadConfigMock.mockResolvedValue({ instances: [createInstance()] });
+		refreshProviderMock.mockResolvedValue({
+			...OK_REFRESH,
+			error: "http://127.0.0.1:8080/v1: boom",
+			errorsByInstance: { "llama-swap": "boom" },
+		});
+		const pi = createMockPi();
+		await llamaSwapExtension(pi as unknown as ExtensionAPI);
+		const base = refreshProviderMock.mock.calls.length;
+		const ctx = createMockCtx(undefined, { provider: "llama-swap", id: "model-1" });
+
+		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
+		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
+		expect(refreshProviderMock.mock.calls.length).toBe(base + 2);
+	});
+
+	it("warns once on a new failure, repeats stay silent, recovery sends an info notice", async () => {
+		const pi = await boot();
+		const ui = createMockUi();
+		const ctx = createMockCtx(ui, { provider: "llama-swap", id: "model-1" });
+
+		refreshProviderMock.mockResolvedValue({ ...OK_REFRESH, errorsByInstance: { "llama-swap": "boom" } });
+		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
+		expect(ui.notify).toHaveBeenCalledTimes(1);
+		expect(ui.notify).toHaveBeenCalledWith("[llama-swap] llama-swap down: boom", "warning");
+
+		// Same error again → silent.
+		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
+		expect(ui.notify).toHaveBeenCalledTimes(1);
+
+		// Changed error → warns again.
+		refreshProviderMock.mockResolvedValue({ ...OK_REFRESH, errorsByInstance: { "llama-swap": "different failure" } });
+		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
+		expect(ui.notify).toHaveBeenCalledTimes(2);
+		expect(ui.notify).toHaveBeenCalledWith("[llama-swap] llama-swap down: different failure", "warning");
+
+		// Recovery → single info notice.
+		refreshProviderMock.mockResolvedValue(OK_REFRESH);
+		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
+		expect(ui.notify).toHaveBeenCalledTimes(3);
+		expect(ui.notify).toHaveBeenCalledWith("[llama-swap] llama-swap is back up", "info");
+	});
+
+	it("does not warn for a failure already present at boot", async () => {
+		loadConfigMock.mockResolvedValue({ instances: [createInstance()] });
+		refreshProviderMock.mockResolvedValue({
+			...OK_REFRESH,
+			error: "http://127.0.0.1:8080/v1: boom",
+			errorsByInstance: { "llama-swap": "boom" },
+		});
+		const pi = createMockPi();
+		const ui = createMockUi();
+		const ctx = createMockCtx(ui, { provider: "llama-swap", id: "model-1" });
+		await llamaSwapExtension(pi as unknown as ExtensionAPI);
+
+		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
+		expect(ui.notify).not.toHaveBeenCalled();
+		// The instance is still down → not settled; but still no duplicate warning.
+		await emit(pi, "after_provider_response", { type: "after_provider_response" }, ctx);
+		expect(ui.notify).not.toHaveBeenCalled();
 	});
 });
 

@@ -11,7 +11,7 @@ import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding
 
 import { configPath, loadConfig, saveContextOverride } from "./lib/config.js";
 import { refreshProvider } from "./lib/provider.js";
-import type { LlamaSwapConfig } from "./lib/types.js";
+import type { LlamaSwapConfig, RefreshResult } from "./lib/types.js";
 
 /** Warns about an unloadable config file at most once per session. */
 let configWarned = false;
@@ -38,6 +38,38 @@ async function loadConfigSafe(
 }
 
 /**
+ * Compares per-instance errors against the last observed set and dedupes
+ * user notifications: a new/changed error warns once, repeated identical
+ * errors stay silent, and an instance that recovers gets one info notice.
+ * @param ui - UI context to notify, or undefined to only update state.
+ * @param refresh - Aggregate refresh result (errorsByInstance).
+ * @param knownIds - Instance ids still in the config (recovery candidates).
+ * @param last - Last observed per-instance errors (replaced in place).
+ */
+function applyRefreshErrors(
+	ui: Pick<ExtensionUIContext, "notify"> | undefined,
+	refresh: RefreshResult,
+	knownIds: Set<string>,
+	last: Map<string, string>,
+): void {
+	const errors = refresh.errorsByInstance ?? {};
+	for (const [id, err] of Object.entries(errors)) {
+		if (last.get(id) !== err) {
+			ui?.notify(`[llama-swap] ${id} down: ${err}`, "warning");
+			last.set(id, err);
+		}
+	}
+	for (const id of [...last.keys()]) {
+		if (errors[id] === undefined) {
+			if (knownIds.has(id)) {
+				ui?.notify(`[llama-swap] ${id} is back up`, "info");
+			}
+			last.delete(id);
+		}
+	}
+}
+
+/**
  * Pi extension factory (async for model discovery before startup).
  * @param pi - Extension API instance.
  */
@@ -46,6 +78,8 @@ export default async function llamaSwapExtension(pi: ExtensionAPI): Promise<void
 	const result = await refreshProvider(pi, initialConfig, { isInitial: true });
 	/** Provider id → model id whose status tag has settled on a stable state. */
 	let settledModelByProvider = new Map<string, string>();
+	/** Last per-instance refresh errors; seeded so a boot failure only shows via the [down] tag. */
+	const lastErrorByInstance = new Map<string, string>(Object.entries(result.errorsByInstance ?? {}));
 
 	if (result.error) {
 		console.warn(`[llama-swap] ${result.error}`);
@@ -72,8 +106,19 @@ export default async function llamaSwapExtension(pi: ExtensionAPI): Promise<void
 		}
 
 		const refresh = await refreshProvider(pi, config);
-		if (refresh.error) {
-			console.warn(`[llama-swap] post-response refresh failed (will retry next response): ${refresh.error}`);
+		applyRefreshErrors(
+			ctx.ui,
+			refresh,
+			new Set(config.instances.map((i) => i.id)),
+			lastErrorByInstance,
+			);
+		// Settle by own instance only: a sibling instance's failure must not
+		// keep re-probing. Fallback to the aggregate error for results that
+		// carry no per-instance data.
+		const ownError = refresh.errorsByInstance
+			? refresh.errorsByInstance[model.provider]
+			: refresh.error;
+		if (ownError) {
 			return;
 		}
 		// Settle only once the model's process state is stable. A transient
@@ -108,9 +153,12 @@ export default async function llamaSwapExtension(pi: ExtensionAPI): Promise<void
 				return;
 			}
 			const refresh = await refreshProvider(pi, config);
-			if (refresh.error) {
-				console.warn(`[llama-swap] model_select refresh failed: ${refresh.error}`);
-			}
+			applyRefreshErrors(
+				ctx.ui,
+				refresh,
+				new Set(config.instances.map((i) => i.id)),
+				lastErrorByInstance,
+				);
 		})().catch((err) => {
 			console.warn(`[llama-swap] model_select refresh failed: ${err instanceof Error ? err.message : String(err)}`);
 		});
@@ -125,6 +173,8 @@ export default async function llamaSwapExtension(pi: ExtensionAPI): Promise<void
 					return;
 				}
 				const refresh = await refreshProvider(pi, config);
+				// Manual command: the status line below is the reply, so only update state.
+				applyRefreshErrors(undefined, refresh, new Set(config.instances.map((i) => i.id)), lastErrorByInstance);
 				ctx.ui.notify(
 					refresh.error
 						? `[llama-swap] refresh finished with errors: ${refresh.error}`

@@ -25,6 +25,20 @@ export const NO_AUTH_API_KEY_PLACEHOLDER = "local-no-auth";
 const registeredIds = new Set<string>();
 
 /**
+ * Last successfully-registered models per instance id. On a later refresh
+ * failure these are re-registered with a ` [⛔ down]` tag so the picker
+ * keeps showing the instance's models instead of losing them.
+ */
+const lastKnownModelsByInstance = new Map<string, ProviderModelConfig[]>();
+
+/**
+ * Instance ids currently registered with a ` [⛔ down]` tag. While down,
+ * repeated failed refreshes skip re-registering the (stable) tagged list to
+ * avoid unregister/register churn on every re-probe.
+ */
+const downTaggedIds = new Set<string>();
+
+/**
  * Maps OpenAI model entries to pi provider model definitions.
  * @param entries - Models from GET /v1/models.
  * @param contextByModel - Resolved context window per model id.
@@ -106,6 +120,19 @@ function runStateTag(state: string): string {
 }
 
 /**
+ * Returns copies of cached model configs with any existing trailing bracket
+ * tag (e.g. ` [🟢 running]`) replaced by the down tag.
+ * @param models - Last successfully-registered models for a downed instance.
+ * @returns Models with names ending in ` [⛔ down]`.
+ */
+function downTaggedModels(models: ProviderModelConfig[]): ProviderModelConfig[] {
+	return models.map((m) => ({
+		...m,
+		name: `${m.name.replace(/\s*\[[^\]]*\]$/, "")} [⛔ down]`,
+	}));
+}
+
+/**
  * Registers one llama-swap provider with the given models.
  * @param pi - Pi extension API.
  * @param instance - Connection settings for this instance.
@@ -166,11 +193,13 @@ async function refreshInstance(
 			instance.contextOverrides,
 			);
 		const models = mapOpenAIModelsToPi(entries, contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel, runningStateByModel);
+		lastKnownModelsByInstance.set(instance.id, models);
 
 		if (registeredIds.has(instance.id)) {
 			pi.unregisterProvider(instance.id);
 		}
 		registerLlamaSwapProvider(pi, instance, models);
+		downTaggedIds.delete(instance.id);
 
 		// ponyail: persist discovered capabilities so non-running models keep
 		// them on the next run (e.g. thinking support before the first request).
@@ -187,16 +216,31 @@ async function refreshInstance(
 		for (const [modelId, state] of runningStateByModel) {
 			runningStates[`${instance.id}:${modelId}`] = state;
 		}
-		return { baseUrl, modelCount: models.length, runningStates };
+		return { baseUrl, modelCount: models.length, instanceId: instance.id, runningStates };
 	} catch (err) {
 		const message = err instanceof LlamaSwapClientError ? err.message : err instanceof Error ? err.message : String(err);
+		const lastKnown = lastKnownModelsByInstance.get(instance.id);
+
+		if (lastKnown) {
+			// Instance is down: keep its last good model list visible, tagged.
+			// The tagged list is stable, so re-register only on the healthy→down
+			// transition; repeated failures skip the unregister/register churn.
+			if (!downTaggedIds.has(instance.id)) {
+				if (registeredIds.has(instance.id)) {
+					pi.unregisterProvider(instance.id);
+				}
+				registerLlamaSwapProvider(pi, instance, downTaggedModels(lastKnown));
+				downTaggedIds.add(instance.id);
+			}
+			return { baseUrl, modelCount: lastKnown.length, instanceId: instance.id, error: message };
+		}
 
 		if (options?.isInitial) {
 			registerLlamaSwapProvider(pi, instance, []);
-			return { baseUrl, modelCount: 0, error: message };
+			return { baseUrl, modelCount: 0, instanceId: instance.id, error: message };
 		}
 
-		return { baseUrl, modelCount: 0, error: message };
+		return { baseUrl, modelCount: 0, instanceId: instance.id, error: message };
 	}
 }
 
@@ -232,21 +276,23 @@ async function doRefreshProvider(
 ): Promise<RefreshResult> {
 	const results = await Promise.all(config.instances.map((instance) => refreshInstance(pi, instance, options)));
 
-	const errors = results.filter((r) => r.error);
-	const error =
-		errors.length > 0
-			? errors.map((r) => `${r.baseUrl}: ${r.error}`).join("; ")
-			: undefined;
-
 	const runningStates: Record<string, string> = {};
+	const errorsByInstance: Record<string, string> = {};
 	for (const r of results) {
+		if (r.error) {
+			errorsByInstance[r.instanceId ?? ""] = r.error;
+		}
 		Object.assign(runningStates, r.runningStates);
 	}
+	const error = Object.keys(errorsByInstance).length > 0
+		? results.filter((r) => r.error).map((r) => `${r.baseUrl}: ${r.error}`).join("; ")
+		: undefined;
 
 	return {
 		baseUrl: results.map((r) => r.baseUrl).join(", "),
 		modelCount: results.reduce((sum, r) => sum + r.modelCount, 0),
 		error,
+		...(error ? { errorsByInstance } : {}),
 		runningStates,
 	};
 }

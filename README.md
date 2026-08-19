@@ -9,11 +9,20 @@ Pi coding agent extension that registers a **llama-swap** provider and discovers
 - Enables image input for models whose `/props` response advertises `vision`, `image`, or `multimodal` support
 - Marks models as reasoning-capable (thinking) when `/props` reports `chat_template_caps.supports_preserve_reasoning`
 - Tags models that are running on llama-swap in the `/model` picker name via `GET /running` process state (e.g. `Qwen3-8B [🟢 running]`, `[🟡 starting]`, `[🟠 stopping]`), so you can tell which upstream is loaded at a glance — updates on every refresh
+- Keeps a downed instance's models in the picker tagged ` [⛔ down]` instead of dropping them, and notifies at most once per failure (plus one recovery notice) — see [Instance health](#instance-health)
 - Caches discovered capabilities (thinking, vision, context window, max tokens) in the config file so pi knows them between runs, even for models that are not currently running — see [Model capabilities cache](#model-capabilities-cache)
 - For reasoning models, drives the chat template via `chat_template_kwargs` (`enable_thinking` + `reasoning_effort`): off → thinking disabled, minimal/low → `low`, medium → `medium`, high → `xhigh`
 - Uses OpenAI Chat Completions API (`openai-completions`) for streaming
 - Reads optional config from `~/.pi/agent/pi-llama-swap.json` to override defaults
 
+## Instance health
+Each refresh probes every configured instance independently, so one dead instance doesn't spam errors or block the healthy ones:
+
+- **` [⛔ down]` tag**: when an instance fails a refresh, its last known model list is re-registered with a trailing ` [⛔ down]` tag (replacing the `[🟢 running]`/`[🟡 starting]`/`[🟠 stopping]` tag). The tag drops automatically once the instance answers again. An instance that never succeeded (e.g. down at boot) registers empty.
+- **One warning per failure**: a new or changed per-instance error fires a single warning notification; the same error repeating stays silent. An instance that recovers gets one info notice.
+- **Failures at boot are quiet**: an instance already down when pi starts is not warned about — it shows via the `[⛔ down]` picker tag (or an empty provider) and you get the recovery notice once it comes back.
+- **Response-driven retries (no background timers)**: while the *own* instance of a model is down, or its process state is still `starting`/`stopping`, the next provider response re-probes. Each retry costs up to the 3s fetch timeout until the instance recovers. Probes also run at startup, on provider switch (30s cooldown), and via `/llama-swap-refresh`.
+- A sibling instance's failure never blocks settling or re-probing of a healthy instance — health is judged per instance. `/llama-swap-refresh` always replies with a status line, even for an already-warned error.
 ## Requirements
 
 - [pi](https://github.com/earendil-works/pi) coding agent (`@earendil-works/pi-coding-agent`) — see its docs for the Node.js requirement
@@ -143,6 +152,7 @@ chmod 600 ~/.pi/agent/pi-llama-swap.json
 | HTTP 401 | Set `apiKey` in config or `LLAMA_SWAP_API_KEY` |
 | 0 models | Ensure models in llama-swap config; `curl http://127.0.0.1:8080/v1/models` |
 | Extension loads but chat fails | Confirm model id; first request may load model (slow) |
+| Models show ` [⛔ down]` | That instance didn't answer the last probe; check it's running. Recovers automatically on the next probe |
 | Config ignored | File must be `~/.pi/agent/pi-llama-swap.json`; run `/llama-swap-refresh` after edits (or `/reload`/restart pi) |
 
 ## Project layout

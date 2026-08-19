@@ -282,6 +282,65 @@ describe("refreshProvider", () => {
 		expect(result.modelCount).toBe(1);
 		expect(result.baseUrl).toBe("http://127.0.0.1:8080/v1, http://127.0.0.1:9000/v1");
 		expect(result.error).toBe("http://127.0.0.1:9000/v1: second instance down");
+		expect(result.errorsByInstance).toEqual({ "llama-swap-2": "second instance down" });
+		expect(result).not.toHaveProperty("instanceId");
+	});
+
+	it("reports errorsByInstance keyed by the failing instance, and none on success", async () => {
+		const { provider, client } = await loadFresh();
+		client.fetchModels.mockRejectedValue(new Error("boom"));
+		stubEmptyRunning();
+		const pi = createMockPi();
+		const config = { instances: [createInstance()] };
+
+		const failed = await provider.refreshProvider(pi as unknown as ExtensionAPI, config);
+		expect(failed.errorsByInstance).toEqual({ "llama-swap": "boom" });
+
+		client.fetchModels.mockResolvedValue([createEntry({ id: "model-1" })]);
+		const ok = await provider.refreshProvider(pi as unknown as ExtensionAPI, config);
+		expect(ok.errorsByInstance).toBeUndefined();
+	});
+
+	it("re-registers the last known models tagged [⛔ down] when a later refresh fails", async () => {
+		const { provider, client } = await loadFresh();
+		client.fetchModels.mockResolvedValue([createEntry({ id: "model-1" })]);
+		mockFetch((url) => {
+			if (String(url).endsWith("/running")) {
+				return jsonResponse({ running: [{ model: "model-1", state: "ready" }] });
+			}
+			return jsonResponse({});
+		});
+		const pi = createMockPi();
+		const config = { instances: [createInstance()] };
+
+		await provider.refreshProvider(pi as unknown as ExtensionAPI, config);
+
+		client.fetchModels.mockRejectedValue(new Error("boom"));
+		const failed = await provider.refreshProvider(pi as unknown as ExtensionAPI, config);
+
+		expect(failed.modelCount).toBe(1);
+		expect(pi.registerProvider).toHaveBeenLastCalledWith(
+			"llama-swap",
+			expect.objectContaining({
+				models: [expect.objectContaining({ id: "model-1", name: "model-1 [⛔ down]" })],
+			}),
+		);
+
+		// Repeated failure with the same down list: no re-registration churn.
+		const registrations = () => pi.registerProvider.mock.calls.filter((c) => c[0] === "llama-swap").length;
+		const before = registrations();
+		await provider.refreshProvider(pi as unknown as ExtensionAPI, config);
+		expect(registrations()).toBe(before);
+
+		// Next success re-registers the fresh list; the down tag drops.
+		client.fetchModels.mockResolvedValue([createEntry({ id: "model-1" })]);
+		await provider.refreshProvider(pi as unknown as ExtensionAPI, config);
+		expect(pi.registerProvider).toHaveBeenLastCalledWith(
+			"llama-swap",
+			expect.objectContaining({
+				models: [expect.objectContaining({ id: "model-1", name: "model-1 [🟢 running]" })],
+			}),
+		);
 	});
 
 	it("reports observed running states keyed by instance id", async () => {

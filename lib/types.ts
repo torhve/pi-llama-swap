@@ -59,6 +59,10 @@ export interface OpenAIModelsListResponse {
 export interface RefreshResult {
 	baseUrl: string;
 	modelCount: number;
+	/** Set on per-instance results: the instance this result belongs to. */
+	instanceId?: string;
+	/** Set on aggregate results: per-instance errors, keyed by instance id. */
+	errorsByInstance?: Record<string, string>;
 	error?: string;
 	/** Observed llama-swap process state per model, keyed `${instanceId}:${modelId}`. */
 	runningStates?: Record<string, string>;
