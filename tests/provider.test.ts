@@ -237,6 +237,53 @@ describe("refreshProvider", () => {
 		});
 	});
 
+	it("registers an unloaded vision model with image input and caches the flag", async () => {
+		const { provider, client, config } = await loadFresh();
+		client.fetchModels.mockResolvedValue([
+			createEntry({
+				id: "gemma4-26b-vision",
+				context_length: 131072,
+				capabilities: { function_calling: true, vision: true },
+				architecture: { input_modalities: ["text", "image"] },
+			}),
+		]);
+		stubEmptyRunning();
+		const pi = createMockPi();
+
+		await provider.refreshProvider(pi as unknown as ExtensionAPI, { instances: [createInstance()] });
+
+		// The model is not loaded, so /props was never consulted: the /v1/models
+		// flags alone must give pi input [text, image], otherwise pi-ai strips
+		// every image from the request.
+		expect(pi.registerProvider).toHaveBeenCalledWith(
+			"llama-swap",
+			expect.objectContaining({
+				models: [expect.objectContaining({ id: "gemma4-26b-vision", input: ["text", "image"] })],
+			}),
+		);
+		expect(config.saveModelCapabilities).toHaveBeenCalledWith("llama-swap", {
+			"gemma4-26b-vision": { contextWindow: 131072, imageInput: true },
+		});
+	});
+
+	it("keeps a text-only model text-only", async () => {
+		const { provider, client } = await loadFresh();
+		client.fetchModels.mockResolvedValue([
+			createEntry({ id: "qwen35-9b-summar", architecture: { input_modalities: ["text"] } }),
+		]);
+		stubEmptyRunning();
+		const pi = createMockPi();
+
+		await provider.refreshProvider(pi as unknown as ExtensionAPI, { instances: [createInstance()] });
+
+		expect(pi.registerProvider).toHaveBeenCalledWith(
+			"llama-swap",
+			expect.objectContaining({
+				models: [expect.objectContaining({ id: "qwen35-9b-summar", input: ["text"] })],
+			}),
+		);
+	});
+
 	it("registers an empty provider and reports the error on an initial failure", async () => {
 		const { provider, client } = await loadFresh();
 		client.fetchModels.mockRejectedValue(new Error("boom"));

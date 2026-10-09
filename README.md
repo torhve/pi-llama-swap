@@ -6,7 +6,7 @@ Pi coding agent extension that registers a **llama-swap** provider and discovers
 
 - Injects provider `llama-swap` with models from `GET /v1/models`
 - Resolves per-model context from llama-swap APIs (`/v1/models`, `/running`) with 256K default — see [Context window](#context-window-per-model)
-- Enables image input for models whose `/props` response advertises `vision`, `image`, or `multimodal` support
+- Enables image input for models that advertise vision support — from the `GET /v1/models` entry (`capabilities.vision` / `architecture.input_modalities`, so it works for models llama-swap has **not loaded yet**) and from a running model's `/props` (`vision`, `image`, or `multimodal`)
 - Marks models as reasoning-capable (thinking) when `/props` reports `chat_template_caps.supports_preserve_reasoning`
 - Tags models that are running on llama-swap in the `/model` picker name via `GET /running` process state (e.g. `Qwen3-8B [🟢 running]`, `[🟡 starting]`, `[🟠 stopping]`), so you can tell which upstream is loaded at a glance — updates on every refresh
 - Keeps a downed instance's models in the picker tagged ` [⛔ down]` instead of dropping them, and notifies at most once per failure (plus one recovery notice) — see [Instance health](#instance-health)
@@ -114,11 +114,11 @@ Context size is auto-detected from llama-swap's `/v1/models` and `/running` endp
 
 Discovered per-model capabilities — reasoning (thinking) support, image input, context window, and max output tokens — are cached in the config file under `modelCapabilities` (per instance). The cache is:
 
-- **Written** on every successful provider refresh: at startup (for models already running) and after the first response of each model (once it is loaded and `/props` is readable).
+- **Written** on every successful provider refresh: at startup (from the `/v1/models` entries, which cover models that are not loaded, plus `/props` for models already running) and after the first response of each model (once it is loaded and `/props` is readable).
 - **Used** at startup for models that are not currently running, so pi knows e.g. thinking support *before* the first request.
-- **Merged** per field: previously cached fields are kept unless re-discovered.
+- **Merged** per field: previously cached fields are kept unless re-discovered. A discovered `false` never overwrites a cached `true` — `/props` has no vision field on older llama-server builds, and a model whose multimodal projector is not loaded right now reports `false`, neither of which should demote a model to text-only.
 
-Precedence (highest wins): user `contextOverrides` > live detection (`/running` + `/props`) > `/v1/models` entries > cache > defaults (256K context; max tokens default to half the context window, since servers typically run llama.cpp with `n_predict -1`).
+Precedence (highest wins): user `contextOverrides` > live detection (`/running` + `/props`) > `/v1/models` entries > cache > defaults (256K context; max tokens default to half the context window, since servers typically run llama.cpp with `n_predict -1`). Image input is the exception: a `true` from **any** source wins, because llama-swap declares it per model in `/v1/models` even when the model is unloaded.
 
 You can delete the `modelCapabilities` block at any time — it rebuilds as models are used.
 
@@ -154,6 +154,7 @@ chmod 600 ~/.pi/agent/pi-llama-swap.json
 | Extension loads but chat fails | Confirm model id; first request may load model (slow) |
 | Models show ` [⛔ down]` | That instance didn't answer the last probe; check it's running. Recovers automatically on the next probe |
 | Config ignored | File must be `~/.pi/agent/pi-llama-swap.json`; run `/llama-swap-refresh` after edits (or `/reload`/restart pi) |
+| Images vanish from requests (`(image omitted: model does not support images)` in the llama-swap trace) | pi strips them when the model is registered text-only. Declare vision in llama-swap (`capabilities.in: [text, image]`) so `/v1/models` reports `architecture.input_modalities`, then run `/llama-swap-refresh` |
 
 ## Project layout
 

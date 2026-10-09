@@ -297,6 +297,7 @@ async function saveContextOverrideLocked(instanceId: string, model: string, ctxS
 /**
  * Merges discovered model capabilities into the config file for an instance.
  * Per-field merge: previously cached fields are kept when absent from `caps`.
+ * A discovered `false` never demotes a cached `true` (see mergeInto).
  * @param instanceId - Provider id of the instance to update.
  * @param caps - Discovered capabilities per model id.
  */
@@ -326,7 +327,22 @@ async function saveModelCapabilitiesLocked(instanceId: string, caps: Record<stri
 	const mergeInto = (target: Record<string, unknown>): void => {
 		const existing = normalizeCapabilities(target.modelCapabilities) ?? {};
 		for (const [model, discovered] of Object.entries(caps)) {
-			existing[model] = { ...existing[model], ...discovered };
+			const previous = existing[model];
+			const merged = { ...previous, ...discovered };
+			// ponyail: a stale or absent live flag must not demote a capability we
+			// already know to be true. /props has no vision field on older
+			// llama-server builds, and a model whose multimodal projector is not
+			// loaded right now reports false — either would otherwise register the
+			// model as text-only, and pi would then strip every image from the
+			// request. The cache is best knowledge across runs, not a snapshot of
+			// the last process that happened to be running.
+			if (previous?.imageInput === true && discovered.imageInput === false) {
+				merged.imageInput = true;
+			}
+			if (previous?.reasoning === true && discovered.reasoning === false) {
+				merged.reasoning = true;
+			}
+			existing[model] = merged;
 		}
 		target.modelCapabilities = existing;
 	};

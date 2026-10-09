@@ -68,6 +68,22 @@ function supportsReasoning(props: LlamaServerProps): boolean {
 }
 
 /**
+ * Returns whether a capability value advertises image/vision input.
+ * Accepts lists such as `["text", "image"]` and maps such as `{ vision: true }`.
+ */
+function hasImageCapability(value: unknown): boolean {
+	if (Array.isArray(value)) {
+		return value.some((item) => typeof item === "string" && /^(?:image|images|vision|multimodal)$/i.test(item));
+	}
+	if (value && typeof value === "object") {
+		return Object.entries(value).some(
+			([key, supported]) => /^(?:image|images|vision|multimodal)$/i.test(key) && supported === true,
+		);
+	}
+	return false;
+}
+
+/**
  * Returns whether a model property advertises image/vision input.
  * It checks a boolean `vision` and lists such as `capabilities: ["vision"]` or
  * `modalities: ["text", "image"]`.
@@ -77,19 +93,35 @@ function supportsImageInput(props: LlamaServerProps): boolean {
 		return true;
 	}
 
-	const hasImageCapability = (value: unknown): boolean => {
-		if (Array.isArray(value)) {
-			return value.some((item) => typeof item === "string" && /^(?:image|images|vision|multimodal)$/i.test(item));
-		}
-		if (value && typeof value === "object") {
-			return Object.entries(value).some(
-				([key, supported]) => /^(?:image|images|vision|multimodal)$/i.test(key) && supported === true,
-			);
-		}
-		return false;
-	};
-
 	return hasImageCapability(props.capabilities) || hasImageCapability(props.modalities) || hasImageCapability(props.input);
+}
+
+/**
+ * Returns whether a GET /v1/models entry advertises image input. llama-swap
+ * publishes this authoritatively per model — `capabilities.in: [text, image]`
+ * surfaces as `architecture.input_modalities`, and `capabilities.vision` is
+ * derived from it — independent of whether the model process is currently
+ * running. Without this, an unloaded vision model is invisible to /props
+ * (llama-swap never starts a server just to answer /props) and would be
+ * registered as text-only, which makes pi strip every image from the request.
+ * @param entry - Model object from llama-swap.
+ * @returns Whether the entry declares image input.
+ */
+export function supportsImageInputEntry(entry: OpenAIModelEntry): boolean {
+	const record = entry as Record<string, unknown>;
+	const architecture = record.architecture;
+	const architectureModalities =
+		architecture && typeof architecture === "object"
+			? (architecture as Record<string, unknown>).input_modalities
+			: undefined;
+	return (
+		record.vision === true ||
+		hasImageCapability(record.capabilities) ||
+		hasImageCapability(record.modalities) ||
+		hasImageCapability(record.input) ||
+		hasImageCapability(record.input_modalities) ||
+		hasImageCapability(architectureModalities)
+	);
 }
 
 /**
@@ -292,8 +324,11 @@ async function loadRunningModelInfo(serverOrigin: string, apiKey?: string): Prom
  * Builds per-model context and max-token maps from llama-swap APIs.
  * Merges the cached capabilities from the config file for models not
  * discovered live this pass (precedence: /v1/models entry < live /running +
- * /props < cache < user overrides). Also reports only the values actually
- * discovered this pass (`detectedByModel`) so callers can persist them.
+ * /props < cache < user overrides). Image input is the exception: llama-swap
+ * declares it per model in /v1/models even when the model is unloaded, so a
+ * `true` from any source wins and a missing live flag never demotes it.
+ * Also reports only the values actually discovered this pass
+ * (`detectedByModel`) so callers can persist them.
  * @param entries - Models from GET /v1/models.
  * @param config - Instance connection settings.
  * @param overrides - Per-model context overrides (highest precedence).
@@ -314,6 +349,7 @@ export async function buildModelLimits(
 }> {
 	const contextByModel = new Map<string, number>();
 	const maxTokensByModel = new Map<string, number>();
+	const imageInputByModel = new Map<string, boolean>();
 	const detectedByModel = new Map<string, ModelCapabilities>();
 	const runningStateByModel = new Map<string, string>();
 
@@ -335,6 +371,12 @@ export async function buildModelLimits(
 			maxTokensByModel.set(entry.id, maxOut);
 			recordDetected(entry.id, { maxTokens: maxOut });
 		}
+		// ponyail: /v1/models carries llama-swap's authoritative per-model vision
+		// flag, so an unloaded vision model is detected without a /props probe.
+		if (supportsImageInputEntry(entry)) {
+			imageInputByModel.set(entry.id, true);
+			recordDetected(entry.id, { imageInput: true });
+		}
 	}
 
 	const serverOrigin = buildServerOrigin(config);
@@ -349,7 +391,15 @@ export async function buildModelLimits(
 			recordDetected(id, { contextWindow: info.ctx });
 		}
 		if (info.props) {
-			recordDetected(id, { reasoning: supportsReasoning(info.props), imageInput: supportsImageInput(info.props) });
+			// ponyail: live /props confirms the /v1/models flags. Either source
+			// being true wins: an mmproj that is not loaded right now, or an older
+			// llama-server that omits the flag, must not demote a model llama-swap
+			// declares as vision-capable.
+			const imageInput = supportsImageInput(info.props) || imageInputByModel.get(id) === true;
+			if (imageInput) {
+				imageInputByModel.set(id, true);
+			}
+			recordDetected(id, { reasoning: supportsReasoning(info.props), imageInput });
 		}
 		// Models listed by /running are live upstreams; tag them with their state.
 		runningStateByModel.set(id, info.state ?? "running");
@@ -378,11 +428,6 @@ export async function buildModelLimits(
 	const reasoningByModel = new Map(
 		[...running]
 			.filter(([, info]) => info.props && supportsReasoning(info.props))
-			.map(([id]) => [id, true] as const),
-	);
-	const imageInputByModel = new Map(
-		[...running]
-			.filter(([, info]) => info.props && supportsImageInput(info.props))
 			.map(([id]) => [id, true] as const),
 	);
 	// ponyail: cached capabilities apply to models not running this pass

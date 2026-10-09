@@ -8,6 +8,7 @@ import {
 	parseContextFromCmd,
 	resolveContextWindow,
 	resolveMaxTokens,
+	supportsImageInputEntry,
 } from "../lib/context.js";
 import { createEntry, createInstance, jsonResponse, mockFetch } from "./mocks.js";
 import type { LlamaSwapInstance, OpenAIModelEntry } from "../lib/types.js";
@@ -164,6 +165,31 @@ describe("resolveMaxTokens", () => {
 		expect(resolveMaxTokens("missing", new Map(), 100)).toBe(50);
 		expect(resolveMaxTokens("missing", new Map(), 101)).toBe(50);
 		expect(resolveMaxTokens("missing", new Map(), 262_144)).toBe(131_072);
+	});
+});
+
+// --- supportsImageInputEntry (GET /v1/models entry flags) -----------------
+
+describe("supportsImageInputEntry", () => {
+	it("detects the shapes llama-swap publishes for a vision model", () => {
+		expect(supportsImageInputEntry(createEntry({ capabilities: { vision: true, function_calling: true } }))).toBe(true);
+		expect(supportsImageInputEntry(createEntry({ architecture: { input_modalities: ["text", "image"] } }))).toBe(true);
+		expect(supportsImageInputEntry(createEntry({ capabilities: ["vision"] }))).toBe(true);
+		expect(supportsImageInputEntry(createEntry({ modalities: { vision: true } }))).toBe(true);
+		expect(supportsImageInputEntry(createEntry({ input_modalities: ["text", "image"] }))).toBe(true);
+		expect(supportsImageInputEntry(createEntry({ vision: true }))).toBe(true);
+	});
+
+	it("returns false for text-only and empty entries", () => {
+		expect(
+			supportsImageInputEntry(
+				createEntry({ capabilities: { function_calling: true }, architecture: { input_modalities: ["text"] } }),
+			),
+		).toBe(false);
+		expect(supportsImageInputEntry(createEntry({ capabilities: { vision: false } }))).toBe(false);
+		expect(supportsImageInputEntry(createEntry({ vision: false }))).toBe(false);
+		expect(supportsImageInputEntry(createEntry({ architecture: {} }))).toBe(false);
+		expect(supportsImageInputEntry(createEntry())).toBe(false);
 	});
 });
 
@@ -369,6 +395,48 @@ describe("buildModelLimits", () => {
 
 		expect(result.reasoningByModel.get("model-1")).toBe(true);
 		expect(result.imageInputByModel.get("model-1")).toBe(true);
+	});
+
+	it("detects image input for an unloaded vision model from the /v1/models entry", async () => {
+		mockFetch(withRunning(jsonResponse({ running: [] }), () => jsonResponse({})));
+		const entries = [
+			createEntry({
+				id: "gemma4-26b-vision",
+				context_length: 131072,
+				capabilities: { function_calling: true, vision: true },
+				architecture: { input_modalities: ["text", "image"], modality: "text+image->text" },
+			}),
+			createEntry({
+				id: "qwen35-9b-summar",
+				capabilities: { function_calling: true },
+				architecture: { input_modalities: ["text"] },
+			}),
+		];
+		const result = await buildModelLimits(entries, createInstance());
+
+		// No /running entry and no cache: the entry flags are the only source.
+		expect(result.imageInputByModel.get("gemma4-26b-vision")).toBe(true);
+		expect(result.imageInputByModel.has("qwen35-9b-summar")).toBe(false);
+		// Entry-derived vision is a live discovery, so it gets cached too.
+		expect(result.detectedByModel.get("gemma4-26b-vision")).toEqual({ contextWindow: 131072, imageInput: true });
+		expect(result.detectedByModel.has("qwen35-9b-summar")).toBe(false);
+	});
+
+	it("keeps a declared vision model image-capable when the running /props reports none", async () => {
+		mockFetch(
+			withRunning(
+				jsonResponse({ running: [{ model: "model-1", state: "ready" }] }),
+				routeProps({ "model-1": { capabilities: ["text"] } }),
+			),
+		);
+		const result = await buildModelLimits(
+			[createEntry({ id: "model-1", capabilities: { vision: true } })],
+			createInstance(),
+		);
+
+		// An mmproj that is not loaded right now must not demote the model.
+		expect(result.imageInputByModel.get("model-1")).toBe(true);
+		expect(result.detectedByModel.get("model-1")?.imageInput).toBe(true);
 	});
 
 	it("does not let the cache override live-discovered values", async () => {

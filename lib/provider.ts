@@ -43,7 +43,8 @@ const downTaggedIds = new Set<string>();
  * @param entries - Models from GET /v1/models.
  * @param contextByModel - Resolved context window per model id.
  * @param maxTokensByModel - Resolved max output tokens per model id.
- * @param imageInputByModel - Image-input support reported by GET /props per model id.
+ * @param imageInputByModel - Image input per model id (GET /v1/models entry flags,
+ *   live GET /props of a running model, or the capabilities cache).
  * @param reasoningByModel - Reasoning support reported by GET /props per model id.
  * @param runningStateByModel - llama-swap process state per model id (GET /running).
  * @returns Pi-compatible model configs.
@@ -185,13 +186,14 @@ async function refreshInstance(
 		} finally {
 			clearTimeout(modelsTimeout);
 		}
-		// Initial load probes only models already running (no model swaps), so
-		// reasoning/vision/context flags are correct before the first request.
+		// Initial load probes only models already running (no model swaps). Vision
+		// comes from the /v1/models entry flags instead, so an unloaded vision
+		// model is registered image-capable before the first request.
 		const { contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel, detectedByModel, runningStateByModel } = await buildModelLimits(
 			entries,
 			instance,
 			instance.contextOverrides,
-			);
+		);
 		const models = mapOpenAIModelsToPi(entries, contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel, runningStateByModel);
 		lastKnownModelsByInstance.set(instance.id, models);
 

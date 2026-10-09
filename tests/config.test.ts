@@ -303,6 +303,38 @@ describe("saveModelCapabilities", () => {
 		]);
 	});
 
+	it("does not demote a cached true capability when the live probe reports false", async () => {
+		readFileMock.mockResolvedValue(
+			JSON.stringify({
+				instances: [{ id: "llama-swap", modelCapabilities: { "model-a": { imageInput: true, reasoning: true } } }],
+			}),
+		);
+		writeFileMock.mockResolvedValue(undefined);
+
+		await saveModelCapabilities("llama-swap", {
+			"model-a": { imageInput: false, reasoning: false, contextWindow: 8192 },
+		});
+
+		// /props without a vision field, or an mmproj that is not loaded right now,
+		// must not turn a known vision/reasoning model into a text-only one.
+		expect(lastWritten().instances).toEqual([
+			expect.objectContaining({
+				modelCapabilities: { "model-a": { imageInput: true, reasoning: true, contextWindow: 8192 } },
+			}),
+		]);
+	});
+
+	it("writes a discovered false when nothing cached it as true", async () => {
+		readFileMock.mockResolvedValue(JSON.stringify({ instances: [{ id: "llama-swap" }] }));
+		writeFileMock.mockResolvedValue(undefined);
+
+		await saveModelCapabilities("llama-swap", { "model-a": { imageInput: false } });
+
+		expect(lastWritten().instances).toEqual([
+			expect.objectContaining({ modelCapabilities: { "model-a": { imageInput: false } } }),
+		]);
+	});
+
 	it("does not write when caps is empty", async () => {
 		readFileMock.mockResolvedValue(JSON.stringify({ instances: [] }));
 		writeFileMock.mockResolvedValue(undefined);
