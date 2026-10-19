@@ -30,11 +30,7 @@ export class LlamaSwapClientError extends Error {
  * @returns Array of model entries from the `data` field.
  * @throws {LlamaSwapClientError} On network or non-2xx responses.
  */
-export async function fetchModels(
-	baseUrl: string,
-	apiKey?: string,
-	signal?: AbortSignal,
-): Promise<OpenAIModelEntry[]> {
+export async function fetchModels(baseUrl: string, apiKey?: string, signal?: AbortSignal): Promise<OpenAIModelEntry[]> {
 	const url = `${baseUrl.replace(/\/$/, "")}/models`;
 	const headers: Record<string, string> = {
 		Accept: "application/json",
@@ -67,9 +63,7 @@ export async function fetchModels(
 	if (!response.ok) {
 		const body = await response.text().catch(() => "");
 		const hint =
-			response.status === 401
-				? " Set apiKey in ~/.pi/agent/pi-llama-swap.json or via LLAMA_SWAP_API_KEY."
-				: "";
+			response.status === 401 ? " Set apiKey in ~/.pi/agent/pi-llama-swap.json or via LLAMA_SWAP_API_KEY." : "";
 		throw new LlamaSwapClientError(
 			`llama-swap returned ${response.status} ${response.statusText}${body ? `: ${body.slice(0, 200)}` : ""}${hint}`,
 			response.status,

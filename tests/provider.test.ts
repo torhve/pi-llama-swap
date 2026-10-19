@@ -15,15 +15,15 @@ vi.mock("../lib/config.js", async (importOriginal) => {
 	return { ...original, saveModelCapabilities: vi.fn() };
 });
 
+import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import {
 	mapOpenAIModelsToPi,
 	NO_AUTH_API_KEY_PLACEHOLDER,
 	PROVIDER_ID,
 	registerLlamaSwapProvider,
 } from "../lib/provider.js";
-import { createEntry, createInstance, createMockPi, jsonResponse, mockFetch } from "./mocks.js";
-import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import type { LlamaSwapInstance } from "../lib/types.js";
+import { createEntry, createInstance, createMockPi, jsonResponse, mockFetch } from "./mocks.js";
 
 afterEach(() => {
 	vi.unstubAllGlobals();
@@ -58,7 +58,15 @@ function stubEmptyRunning() {
 }
 
 const oneModel = (): ProviderModelConfig[] => [
-	{ id: "m1", name: "m1", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 2048 },
+	{
+		id: "m1",
+		name: "m1",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 4096,
+		maxTokens: 2048,
+	},
 ];
 
 describe("PROVIDER_ID / NO_AUTH_API_KEY_PLACEHOLDER", () => {
@@ -79,11 +87,7 @@ describe("mapOpenAIModelsToPi", () => {
 	it("maps id and name, falling back to id when name is missing or empty", () => {
 		const { ctx, max, img, reason } = emptyMaps();
 		const [withName, missing, empty] = mapOpenAIModelsToPi(
-			[
-				{ id: "m1", name: "My Model" },
-				{ id: "m2" },
-				{ id: "m3", name: "" },
-			],
+			[{ id: "m1", name: "My Model" }, { id: "m2" }, { id: "m3", name: "" }],
 			ctx,
 			max,
 			img,
@@ -290,7 +294,11 @@ describe("refreshProvider", () => {
 		stubEmptyRunning();
 		const pi = createMockPi();
 
-		const result = await provider.refreshProvider(pi as unknown as ExtensionAPI, { instances: [createInstance()] }, { isInitial: true });
+		const result = await provider.refreshProvider(
+			pi as unknown as ExtensionAPI,
+			{ instances: [createInstance()] },
+			{ isInitial: true },
+		);
 
 		expect(result.modelCount).toBe(0);
 		expect(result.error).toBe("http://127.0.0.1:8080/v1: boom");
@@ -321,7 +329,10 @@ describe("refreshProvider", () => {
 		stubEmptyRunning();
 		const pi = createMockPi();
 		const config: { instances: LlamaSwapInstance[] } = {
-			instances: [createInstance({ id: "llama-swap", port: 8080 }), createInstance({ id: "llama-swap-2", port: 9000 })],
+			instances: [
+				createInstance({ id: "llama-swap", port: 8080 }),
+				createInstance({ id: "llama-swap-2", port: 9000 }),
+			],
 		};
 
 		const result = await provider.refreshProvider(pi as unknown as ExtensionAPI, config);
@@ -408,7 +419,7 @@ describe("refreshProvider", () => {
 
 	it("aggregates running states across instances with prefixed keys", async () => {
 		const { provider, client } = await loadFresh();
-		client.fetchModels.mockImplementation((baseUrl: string) => {
+		client.fetchModels.mockImplementation(() => {
 			return Promise.resolve([createEntry({ id: "model-1" })]);
 		});
 		mockFetch((url) => {
@@ -421,7 +432,10 @@ describe("refreshProvider", () => {
 		});
 		const pi = createMockPi();
 		const config: { instances: LlamaSwapInstance[] } = {
-			instances: [createInstance({ id: "llama-swap", port: 8080 }), createInstance({ id: "llama-swap-2", port: 9000 })],
+			instances: [
+				createInstance({ id: "llama-swap", port: 8080 }),
+				createInstance({ id: "llama-swap-2", port: 9000 }),
+			],
 		};
 
 		const result = await provider.refreshProvider(pi as unknown as ExtensionAPI, config);

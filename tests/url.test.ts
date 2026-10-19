@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-
+import type { LlamaSwapInstance } from "../lib/types.js";
 import {
 	buildBaseUrl,
 	buildServerOrigin,
@@ -9,7 +9,6 @@ import {
 	parsePortArg,
 	parseUrlArg,
 } from "../lib/url.js";
-import type { LlamaSwapInstance } from "../lib/types.js";
 
 describe("defaultInstance", () => {
 	it("returns the documented defaults with empty id/name", () => {
@@ -78,21 +77,19 @@ describe("buildBaseUrl", () => {
 	});
 
 	it("normalizes a custom basePath", () => {
-		expect(
-			buildBaseUrl({ origin: "http://127.0.0.1", port: 8080, basePath: "/custom" } as LlamaSwapInstance),
-		).toBe("http://127.0.0.1:8080/custom/v1");
-	});
-
-	it("prepends http:// to a bare host", () => {
-		expect(buildBaseUrl({ origin: "127.0.0.1", port: 8080 } as LlamaSwapInstance)).toBe(
-			"http://127.0.0.1:8080/v1",
+		expect(buildBaseUrl({ origin: "http://127.0.0.1", port: 8080, basePath: "/custom" } as LlamaSwapInstance)).toBe(
+			"http://127.0.0.1:8080/custom/v1",
 		);
 	});
 
+	it("prepends http:// to a bare host", () => {
+		expect(buildBaseUrl({ origin: "127.0.0.1", port: 8080 } as LlamaSwapInstance)).toBe("http://127.0.0.1:8080/v1");
+	});
+
 	it("strips a trailing slash from the result", () => {
-		expect(
-			buildBaseUrl({ origin: "http://127.0.0.1", port: 8080, basePath: "/v1/" } as LlamaSwapInstance),
-		).toBe("http://127.0.0.1:8080/v1");
+		expect(buildBaseUrl({ origin: "http://127.0.0.1", port: 8080, basePath: "/v1/" } as LlamaSwapInstance)).toBe(
+			"http://127.0.0.1:8080/v1",
+		);
 	});
 });
 

@@ -169,6 +169,7 @@ pi-llama-swap/
 │   ├── provider.ts   # registerProvider
 │   └── types.ts
 ├── package.json
+├── biome.json        # Lint + format config (Biome)
 └── README.md
 ```
 
@@ -178,7 +179,10 @@ The extension ships with a [Vitest](https://vitest.dev) unit-test suite under `t
 
 ```bash
 npm test        # run the full suite
-npm run check   # type-check (tsc --noEmit)
+npm run check   # lint (Biome) + tests + type-check
+npm run lint    # Biome lint + format check only
+npm run lint:fix  # apply Biome fixes
+npm run format  # Biome formatting only
 ```
 
 Strategy:

@@ -10,9 +10,8 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-
-import { defaultInstance, mergeConfig, parsePortArg, parseUrlArg } from "./url.js";
 import type { LlamaSwapConfig, LlamaSwapInstance, ModelCapabilities } from "./types.js";
+import { defaultInstance, mergeConfig, parsePortArg, parseUrlArg } from "./url.js";
 
 const CONFIG_FILENAME = "pi-llama-swap.json";
 
@@ -132,7 +131,11 @@ function normalizeCapabilities(value: unknown): Record<string, ModelCapabilities
 		if (typeof record.imageInput === "boolean") {
 			entry.imageInput = record.imageInput;
 		}
-		if (typeof record.contextWindow === "number" && Number.isInteger(record.contextWindow) && record.contextWindow > 0) {
+		if (
+			typeof record.contextWindow === "number" &&
+			Number.isInteger(record.contextWindow) &&
+			record.contextWindow > 0
+		) {
 			entry.contextWindow = record.contextWindow;
 		}
 		if (typeof record.maxTokens === "number" && Number.isInteger(record.maxTokens) && record.maxTokens > 0) {
@@ -217,10 +220,7 @@ export async function loadConfig(): Promise<LlamaSwapConfig> {
 		const taken = new Set<string>();
 		const instances: LlamaSwapInstance[] = file.instances.map((entry, index) => {
 			const raw = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : {};
-			const id =
-				typeof raw.id === "string" && raw.id.trim()
-					? raw.id.trim()
-					: generateId(index, taken);
+			const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : generateId(index, taken);
 			taken.add(id);
 			const name = typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : generateName(index);
 			return mergeConfig(defaultInstance(), { id, name, ...normalizeConnection(raw) });
@@ -244,7 +244,11 @@ export async function loadConfig(): Promise<LlamaSwapConfig> {
  * @param model - Model id to set or clear.
  * @param ctxSize - Context size in tokens, or undefined to remove the override.
  */
-export async function saveContextOverride(instanceId: string, model: string, ctxSize: number | undefined): Promise<void> {
+export async function saveContextOverride(
+	instanceId: string,
+	model: string,
+	ctxSize: number | undefined,
+): Promise<void> {
 	await withConfigFileLock(() => saveContextOverrideLocked(instanceId, model, ctxSize));
 }
 
@@ -255,7 +259,11 @@ export async function saveContextOverride(instanceId: string, model: string, ctx
  * @param model - Model id to set or clear.
  * @param ctxSize - Context size in tokens, or undefined to remove the override.
  */
-async function saveContextOverrideLocked(instanceId: string, model: string, ctxSize: number | undefined): Promise<void> {
+async function saveContextOverrideLocked(
+	instanceId: string,
+	model: string,
+	ctxSize: number | undefined,
+): Promise<void> {
 	const path = configPath();
 	let current: Record<string, unknown> = {};
 	try {
@@ -301,7 +309,10 @@ async function saveContextOverrideLocked(instanceId: string, model: string, ctxS
  * @param instanceId - Provider id of the instance to update.
  * @param caps - Discovered capabilities per model id.
  */
-export async function saveModelCapabilities(instanceId: string, caps: Record<string, ModelCapabilities>): Promise<void> {
+export async function saveModelCapabilities(
+	instanceId: string,
+	caps: Record<string, ModelCapabilities>,
+): Promise<void> {
 	if (Object.keys(caps).length === 0) {
 		return;
 	}

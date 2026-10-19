@@ -5,12 +5,11 @@
  */
 
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
-
-import { buildModelLimits, resolveContextWindow, resolveMaxTokens } from "./context.js";
 import { fetchModels, LlamaSwapClientError } from "./client.js";
-import { buildBaseUrl } from "./url.js";
 import { DEFAULT_INSTANCE_ID, saveModelCapabilities } from "./config.js";
+import { buildModelLimits, resolveContextWindow, resolveMaxTokens } from "./context.js";
 import type { LlamaSwapConfig, LlamaSwapInstance, OpenAIModelEntry, RefreshResult } from "./types.js";
+import { buildBaseUrl } from "./url.js";
 
 /** Provider id of the first (default) instance. */
 export const PROVIDER_ID = DEFAULT_INSTANCE_ID;
@@ -75,27 +74,29 @@ export function mapOpenAIModelsToPi(
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow,
 			maxTokens,
-			...(supportsReasoning ? {
-				// Map pi thinking levels to the chat template's reasoning_effort
-				// vocabulary. llama-server renders these into the template, which
-				// picks the effort tier. "off" is omitted (see thinking.enabled).
-				thinkingLevelMap: {
-					minimal: "low",
-					low: "low",
-					medium: "medium",
-					high: "xhigh",
-				},
-				compat: {
-					thinkingFormat: "chat-template" as const,
-					chatTemplateKwargs: {
-						// Toggle the template's enable_thinking (defaults true, so
-						// "off" must explicitly send false to stop thinking).
-						enable_thinking: { $var: "thinking.enabled" as const },
-						// Effort tier; resolved through thinkingLevelMap, omitted at off.
-						reasoning_effort: { $var: "thinking.effort" as const },
-					},
-				},
-			} : {}),
+			...(supportsReasoning
+				? {
+						// Map pi thinking levels to the chat template's reasoning_effort
+						// vocabulary. llama-server renders these into the template, which
+						// picks the effort tier. "off" is omitted (see thinking.enabled).
+						thinkingLevelMap: {
+							minimal: "low",
+							low: "low",
+							medium: "medium",
+							high: "xhigh",
+						},
+						compat: {
+							thinkingFormat: "chat-template" as const,
+							chatTemplateKwargs: {
+								// Toggle the template's enable_thinking (defaults true, so
+								// "off" must explicitly send false to stop thinking).
+								enable_thinking: { $var: "thinking.enabled" as const },
+								// Effort tier; resolved through thinkingLevelMap, omitted at off.
+								reasoning_effort: { $var: "thinking.effort" as const },
+							},
+						},
+					}
+				: {}),
 		};
 	});
 }
@@ -189,12 +190,22 @@ async function refreshInstance(
 		// Initial load probes only models already running (no model swaps). Vision
 		// comes from the /v1/models entry flags instead, so an unloaded vision
 		// model is registered image-capable before the first request.
-		const { contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel, detectedByModel, runningStateByModel } = await buildModelLimits(
+		const {
+			contextByModel,
+			maxTokensByModel,
+			imageInputByModel,
+			reasoningByModel,
+			detectedByModel,
+			runningStateByModel,
+		} = await buildModelLimits(entries, instance, instance.contextOverrides);
+		const models = mapOpenAIModelsToPi(
 			entries,
-			instance,
-			instance.contextOverrides,
+			contextByModel,
+			maxTokensByModel,
+			imageInputByModel,
+			reasoningByModel,
+			runningStateByModel,
 		);
-		const models = mapOpenAIModelsToPi(entries, contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel, runningStateByModel);
 		lastKnownModelsByInstance.set(instance.id, models);
 
 		if (registeredIds.has(instance.id)) {
@@ -220,7 +231,8 @@ async function refreshInstance(
 		}
 		return { baseUrl, modelCount: models.length, instanceId: instance.id, runningStates };
 	} catch (err) {
-		const message = err instanceof LlamaSwapClientError ? err.message : err instanceof Error ? err.message : String(err);
+		const message =
+			err instanceof LlamaSwapClientError ? err.message : err instanceof Error ? err.message : String(err);
 		const lastKnown = lastKnownModelsByInstance.get(instance.id);
 
 		if (lastKnown) {
@@ -286,9 +298,13 @@ async function doRefreshProvider(
 		}
 		Object.assign(runningStates, r.runningStates);
 	}
-	const error = Object.keys(errorsByInstance).length > 0
-		? results.filter((r) => r.error).map((r) => `${r.baseUrl}: ${r.error}`).join("; ")
-		: undefined;
+	const error =
+		Object.keys(errorsByInstance).length > 0
+			? results
+					.filter((r) => r.error)
+					.map((r) => `${r.baseUrl}: ${r.error}`)
+					.join("; ")
+			: undefined;
 
 	return {
 		baseUrl: results.map((r) => r.baseUrl).join(", "),

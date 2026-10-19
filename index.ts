@@ -77,7 +77,7 @@ export default async function llamaSwapExtension(pi: ExtensionAPI): Promise<void
 	const initialConfig = await loadConfig();
 	const result = await refreshProvider(pi, initialConfig, { isInitial: true });
 	/** Provider id → model id whose status tag has settled on a stable state. */
-	let settledModelByProvider = new Map<string, string>();
+	const settledModelByProvider = new Map<string, string>();
 	/** Last per-instance refresh errors; seeded so a boot failure only shows via the [down] tag. */
 	const lastErrorByInstance = new Map<string, string>(Object.entries(result.errorsByInstance ?? {}));
 
@@ -106,18 +106,11 @@ export default async function llamaSwapExtension(pi: ExtensionAPI): Promise<void
 		}
 
 		const refresh = await refreshProvider(pi, config);
-		applyRefreshErrors(
-			ctx.ui,
-			refresh,
-			new Set(config.instances.map((i) => i.id)),
-			lastErrorByInstance,
-			);
+		applyRefreshErrors(ctx.ui, refresh, new Set(config.instances.map((i) => i.id)), lastErrorByInstance);
 		// Settle by own instance only: a sibling instance's failure must not
 		// keep re-probing. Fallback to the aggregate error for results that
 		// carry no per-instance data.
-		const ownError = refresh.errorsByInstance
-			? refresh.errorsByInstance[model.provider]
-			: refresh.error;
+		const ownError = refresh.errorsByInstance ? refresh.errorsByInstance[model.provider] : refresh.error;
 		if (ownError) {
 			return;
 		}
@@ -149,18 +142,15 @@ export default async function llamaSwapExtension(pi: ExtensionAPI): Promise<void
 		lastPreWarmAt = now;
 		void (async () => {
 			const config = await loadConfigSafe(ctx.ui);
-			if (!config || !config.instances.some((inst) => inst.id === model.provider)) {
+			if (!config?.instances.some((inst) => inst.id === model.provider)) {
 				return;
 			}
 			const refresh = await refreshProvider(pi, config);
-			applyRefreshErrors(
-				ctx.ui,
-				refresh,
-				new Set(config.instances.map((i) => i.id)),
-				lastErrorByInstance,
-				);
+			applyRefreshErrors(ctx.ui, refresh, new Set(config.instances.map((i) => i.id)), lastErrorByInstance);
 		})().catch((err) => {
-			console.warn(`[llama-swap] model_select refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+			console.warn(
+				`[llama-swap] model_select refresh failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
 		});
 	});
 
@@ -230,7 +220,7 @@ export default async function llamaSwapExtension(pi: ExtensionAPI): Promise<void
 			const ctxSize = Number(trimmed);
 			if (!Number.isInteger(ctxSize) || ctxSize < 1) {
 				ctx.ui.notify(
-					"Invalid context size. Use a positive integer or \"auto\".\nExample: /llama-swap-set-context-length 32768",
+					'Invalid context size. Use a positive integer or "auto".\nExample: /llama-swap-set-context-length 32768',
 					"error",
 				);
 				return;

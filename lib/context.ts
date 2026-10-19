@@ -93,7 +93,11 @@ function supportsImageInput(props: LlamaServerProps): boolean {
 		return true;
 	}
 
-	return hasImageCapability(props.capabilities) || hasImageCapability(props.modalities) || hasImageCapability(props.input);
+	return (
+		hasImageCapability(props.capabilities) ||
+		hasImageCapability(props.modalities) ||
+		hasImageCapability(props.input)
+	);
 }
 
 /**
@@ -223,7 +227,10 @@ export function parseContextFromCmd(cmd: string): number | undefined {
  * @param headers - Optional request headers.
  * @returns Props or undefined when the endpoint is unavailable or invalid.
  */
-async function fetchProps(url: URL | string, headers: Record<string, string> = { Accept: "application/json" }): Promise<LlamaServerProps | undefined> {
+async function fetchProps(
+	url: URL | string,
+	headers: Record<string, string> = { Accept: "application/json" },
+): Promise<LlamaServerProps | undefined> {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 	try {
@@ -442,7 +449,14 @@ export async function buildModelLimits(
 		}
 	}
 
-	return { contextByModel, maxTokensByModel, imageInputByModel, reasoningByModel, detectedByModel, runningStateByModel };
+	return {
+		contextByModel,
+		maxTokensByModel,
+		imageInputByModel,
+		reasoningByModel,
+		detectedByModel,
+		runningStateByModel,
+	};
 }
 
 /**
@@ -471,8 +485,9 @@ export function resolveMaxTokens(
 	maxTokensByModel: Map<string, number>,
 	contextWindow: number,
 ): number {
-	if (maxTokensByModel.has(modelId)) {
-		return maxTokensByModel.get(modelId)!;
+	const configured = maxTokensByModel.get(modelId);
+	if (configured !== undefined) {
+		return configured;
 	}
 	return Math.floor(contextWindow / 2);
 }

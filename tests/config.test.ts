@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { readFileMock, writeFileMock, homedirMock } = vi.hoisted(() => ({
 	readFileMock: vi.fn(),
@@ -83,7 +83,12 @@ describe("loadConfig", () => {
 
 	it("parses the legacy single-instance shape", async () => {
 		readFileMock.mockResolvedValue(
-			JSON.stringify({ origin: "http://10.0.0.5", port: 9090, apiKey: "legacy-key", contextOverrides: { "model-a": 8192 } }),
+			JSON.stringify({
+				origin: "http://10.0.0.5",
+				port: 9090,
+				apiKey: "legacy-key",
+				contextOverrides: { "model-a": 8192 },
+			}),
 		);
 		const config = await loadConfig();
 
@@ -132,10 +137,7 @@ describe("loadConfig", () => {
 	it("generates a unique id when an explicit id collides with an auto-generated one", async () => {
 		readFileMock.mockResolvedValue(
 			JSON.stringify({
-				instances: [
-					{ id: "llama-swap-2", origin: "http://a" },
-					{ origin: "http://b" },
-				],
+				instances: [{ id: "llama-swap-2", origin: "http://a" }, { origin: "http://b" }],
 			}),
 		);
 		const config = await loadConfig();
@@ -229,7 +231,9 @@ describe("applyEnvOverrides", () => {
 
 describe("saveContextOverride", () => {
 	it("sets a context override on an existing instance (multi shape)", async () => {
-		readFileMock.mockResolvedValue(JSON.stringify({ instances: [{ id: "llama-swap", origin: "http://127.0.0.1", port: 8080 }] }));
+		readFileMock.mockResolvedValue(
+			JSON.stringify({ instances: [{ id: "llama-swap", origin: "http://127.0.0.1", port: 8080 }] }),
+		);
 		writeFileMock.mockResolvedValue(undefined);
 
 		await saveContextOverride("llama-swap", "model-a", 8192);
@@ -243,7 +247,9 @@ describe("saveContextOverride", () => {
 
 	it("clears an override when ctxSize is undefined", async () => {
 		readFileMock.mockResolvedValue(
-			JSON.stringify({ instances: [{ id: "llama-swap", contextOverrides: { "model-a": 8192, "model-b": 4096 } }] }),
+			JSON.stringify({
+				instances: [{ id: "llama-swap", contextOverrides: { "model-a": 8192, "model-b": 4096 } }],
+			}),
 		);
 		writeFileMock.mockResolvedValue(undefined);
 
@@ -287,11 +293,16 @@ describe("saveContextOverride", () => {
 describe("saveModelCapabilities", () => {
 	it("merges discovered caps per field, keeping previously cached fields", async () => {
 		readFileMock.mockResolvedValue(
-			JSON.stringify({ instances: [{ id: "llama-swap", modelCapabilities: { "model-a": { reasoning: true } } }] }),
+			JSON.stringify({
+				instances: [{ id: "llama-swap", modelCapabilities: { "model-a": { reasoning: true } } }],
+			}),
 		);
 		writeFileMock.mockResolvedValue(undefined);
 
-		await saveModelCapabilities("llama-swap", { "model-a": { contextWindow: 4096 }, "model-b": { imageInput: true } });
+		await saveModelCapabilities("llama-swap", {
+			"model-a": { contextWindow: 4096 },
+			"model-b": { imageInput: true },
+		});
 
 		expect(lastWritten().instances).toEqual([
 			expect.objectContaining({
@@ -306,7 +317,9 @@ describe("saveModelCapabilities", () => {
 	it("does not demote a cached true capability when the live probe reports false", async () => {
 		readFileMock.mockResolvedValue(
 			JSON.stringify({
-				instances: [{ id: "llama-swap", modelCapabilities: { "model-a": { imageInput: true, reasoning: true } } }],
+				instances: [
+					{ id: "llama-swap", modelCapabilities: { "model-a": { imageInput: true, reasoning: true } } },
+				],
 			}),
 		);
 		writeFileMock.mockResolvedValue(undefined);

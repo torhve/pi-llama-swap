@@ -11,7 +11,6 @@ import {
 	supportsImageInputEntry,
 } from "../lib/context.js";
 import { createEntry, createInstance, jsonResponse, mockFetch } from "./mocks.js";
-import type { LlamaSwapInstance, OpenAIModelEntry } from "../lib/types.js";
 
 afterEach(() => {
 	vi.unstubAllGlobals();
@@ -30,7 +29,9 @@ describe("extractContextFromModelEntry", () => {
 	});
 
 	it("falls back to max_context_length, then context_window", () => {
-		expect(extractContextFromModelEntry(createEntry({ max_context_length: 8192, context_window: 16384 }))).toBe(8192);
+		expect(extractContextFromModelEntry(createEntry({ max_context_length: 8192, context_window: 16384 }))).toBe(
+			8192,
+		);
 		expect(extractContextFromModelEntry(createEntry({ context_window: 16384 }))).toBe(16384);
 	});
 
@@ -38,7 +39,9 @@ describe("extractContextFromModelEntry", () => {
 		expect(extractContextFromModelEntry(createEntry({ meta: { llamaswap: { context_length: 4096 } } }))).toBe(4096);
 		expect(extractContextFromModelEntry(createEntry({ meta: { llamaswap: { context: 8192 } } }))).toBe(8192);
 		expect(extractContextFromModelEntry(createEntry({ meta: { llamaswap: { max_context: 16384 } } }))).toBe(16384);
-		expect(extractContextFromModelEntry(createEntry({ meta: { llamaswap: { max_context_length: 32768 } } }))).toBe(32768);
+		expect(extractContextFromModelEntry(createEntry({ meta: { llamaswap: { max_context_length: 32768 } } }))).toBe(
+			32768,
+		);
 		expect(
 			extractContextFromModelEntry(
 				createEntry({ meta: { llamaswap: { context: 8192, max_context: 16384, max_context_length: 32768 } } }),
@@ -48,18 +51,18 @@ describe("extractContextFromModelEntry", () => {
 
 	it("prefers meta.n_ctx after meta.llamaswap", () => {
 		expect(extractContextFromModelEntry(createEntry({ meta: { n_ctx: 4096 } }))).toBe(4096);
-		expect(extractContextFromModelEntry(createEntry({ meta: { llamaswap: { context_length: 4096 }, n_ctx: 8192 } }))).toBe(
-			4096,
-		);
+		expect(
+			extractContextFromModelEntry(createEntry({ meta: { llamaswap: { context_length: 4096 }, n_ctx: 8192 } })),
+		).toBe(4096);
 	});
 
 	it("reads metadata.context_length and metadata.context last", () => {
 		expect(extractContextFromModelEntry(createEntry({ metadata: { context_length: 4096 } }))).toBe(4096);
 		expect(extractContextFromModelEntry(createEntry({ metadata: { context: 8192 } }))).toBe(8192);
 		// meta beats metadata
-		expect(extractContextFromModelEntry(createEntry({ meta: { n_ctx: 4096 }, metadata: { context_length: 8192 } }))).toBe(
-			4096,
-		);
+		expect(
+			extractContextFromModelEntry(createEntry({ meta: { n_ctx: 4096 }, metadata: { context_length: 8192 } })),
+		).toBe(4096);
 	});
 
 	it("prefers a top-level field over any meta/metadata value", () => {
@@ -92,14 +95,18 @@ describe("extractMaxTokensFromModelEntry", () => {
 	});
 
 	it("falls back to meta.llamaswap (output_length then max_tokens)", () => {
-		expect(extractMaxTokensFromModelEntry(createEntry({ meta: { llamaswap: { output_length: 1024 } } }))).toBe(1024);
+		expect(extractMaxTokensFromModelEntry(createEntry({ meta: { llamaswap: { output_length: 1024 } } }))).toBe(
+			1024,
+		);
 		expect(extractMaxTokensFromModelEntry(createEntry({ meta: { llamaswap: { max_tokens: 2048 } } }))).toBe(2048);
 	});
 
 	it("prefers top-level over meta.llamaswap", () => {
-		expect(extractMaxTokensFromModelEntry(createEntry({ max_tokens: 2048, meta: { llamaswap: { output_length: 1024 } } }))).toBe(
-			2048,
-		);
+		expect(
+			extractMaxTokensFromModelEntry(
+				createEntry({ max_tokens: 2048, meta: { llamaswap: { output_length: 1024 } } }),
+			),
+		).toBe(2048);
 	});
 
 	it("returns undefined when nothing is present or valid", () => {
@@ -172,8 +179,12 @@ describe("resolveMaxTokens", () => {
 
 describe("supportsImageInputEntry", () => {
 	it("detects the shapes llama-swap publishes for a vision model", () => {
-		expect(supportsImageInputEntry(createEntry({ capabilities: { vision: true, function_calling: true } }))).toBe(true);
-		expect(supportsImageInputEntry(createEntry({ architecture: { input_modalities: ["text", "image"] } }))).toBe(true);
+		expect(supportsImageInputEntry(createEntry({ capabilities: { vision: true, function_calling: true } }))).toBe(
+			true,
+		);
+		expect(supportsImageInputEntry(createEntry({ architecture: { input_modalities: ["text", "image"] } }))).toBe(
+			true,
+		);
 		expect(supportsImageInputEntry(createEntry({ capabilities: ["vision"] }))).toBe(true);
 		expect(supportsImageInputEntry(createEntry({ modalities: { vision: true } }))).toBe(true);
 		expect(supportsImageInputEntry(createEntry({ input_modalities: ["text", "image"] }))).toBe(true);
@@ -264,10 +275,7 @@ describe("buildModelLimits", () => {
 
 	it("records the explicit running state when present", async () => {
 		mockFetch(
-			withRunning(
-				jsonResponse({ running: [{ model: "model-1", state: "starting" }] }),
-				() => jsonResponse({}),
-			),
+			withRunning(jsonResponse({ running: [{ model: "model-1", state: "starting" }] }), () => jsonResponse({})),
 		);
 		const result = await buildModelLimits([createEntry({ id: "model-1" })], createInstance());
 		expect(result.runningStateByModel.get("model-1")).toBe("starting");
@@ -333,9 +341,7 @@ describe("buildModelLimits", () => {
 			{ input: { image: true } },
 		];
 		for (const props of positive) {
-			mockFetch(
-				withRunning(jsonResponse({ running: [{ model: "model-1" }] }), routeProps({ "model-1": props })),
-			);
+			mockFetch(withRunning(jsonResponse({ running: [{ model: "model-1" }] }), routeProps({ "model-1": props })));
 			const result = await buildModelLimits([createEntry({ id: "model-1" })], createInstance());
 			expect(result.imageInputByModel.get("model-1"), JSON.stringify(props)).toBe(true);
 			expect(result.detectedByModel.get("model-1")?.imageInput, JSON.stringify(props)).toBe(true);
@@ -346,9 +352,7 @@ describe("buildModelLimits", () => {
 	it("does not detect image input from negative /props shapes", async () => {
 		const negative = [{ capabilities: ["text"] }, { input: { image: false } }, {}];
 		for (const props of negative) {
-			mockFetch(
-				withRunning(jsonResponse({ running: [{ model: "model-1" }] }), routeProps({ "model-1": props })),
-			);
+			mockFetch(withRunning(jsonResponse({ running: [{ model: "model-1" }] }), routeProps({ "model-1": props })));
 			const result = await buildModelLimits([createEntry({ id: "model-1" })], createInstance());
 			expect(result.imageInputByModel.has("model-1"), JSON.stringify(props)).toBe(false);
 			expect(result.detectedByModel.get("model-1")?.imageInput, JSON.stringify(props)).toBe(false);

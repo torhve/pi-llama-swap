@@ -47,20 +47,20 @@ describe("fetchModels", () => {
 		const result = await fetchModels(BASE);
 
 		expect(result).toEqual([{ id: "m1" }, { id: "m2" }]);
-		expect(spy).toHaveBeenCalledWith(BASE + "/models", expect.objectContaining({ method: "GET" }));
+		expect(spy).toHaveBeenCalledWith(`${BASE}/models`, expect.objectContaining({ method: "GET" }));
 	});
 
 	it("strips a trailing slash from the base URL", async () => {
 		const spy = mockFetch(() => jsonResponse({ data: [] }));
-		await fetchModels(BASE + "/");
-		expect(spy).toHaveBeenCalledWith(BASE + "/models", expect.anything());
+		await fetchModels(`${BASE}/`);
+		expect(spy).toHaveBeenCalledWith(`${BASE}/models`, expect.anything());
 	});
 
 	it("sends a Bearer Authorization header when an apiKey is provided", async () => {
 		const spy = mockFetch(() => jsonResponse({ data: [] }));
 		await fetchModels(BASE, "secret");
 		expect(spy).toHaveBeenCalledWith(
-			BASE + "/models",
+			`${BASE}/models`,
 			expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer secret" }) }),
 		);
 	});
