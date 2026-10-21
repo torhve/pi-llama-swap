@@ -20,10 +20,11 @@ import {
 	mapOpenAIModelsToPi,
 	NO_AUTH_API_KEY_PLACEHOLDER,
 	PROVIDER_ID,
+	type RefreshModelsContext,
 	registerLlamaSwapProvider,
 } from "../lib/provider.js";
 import type { LlamaSwapInstance } from "../lib/types.js";
-import { createEntry, createInstance, createMockPi, jsonResponse, mockFetch } from "./mocks.js";
+import { createEntry, createInstance, createMockPi, jsonResponse, type MockPi, mockFetch } from "./mocks.js";
 
 afterEach(() => {
 	vi.unstubAllGlobals();
@@ -484,5 +485,182 @@ describe("refreshProvider", () => {
 		const unregister = pi.unregisterProvider.mock.invocationCallOrder[0];
 		expect(unregister).toBeGreaterThan(firstRegister);
 		expect(unregister).toBeLessThan(secondRegister);
+	});
+});
+
+// --- pi catalog refresh hook (ProviderConfig.refreshModels) -----------------
+
+/**
+ * Reads the `refreshModels` hook pi calls when it refreshes catalogs (opening
+ * the `/model` picker, startup, `/models`, `pi update --models`).
+ */
+function refreshHook(pi: MockPi, id = "llama-swap") {
+	const config = pi.providers.get(id) as {
+		refreshModels?: (context: RefreshModelsContext) => Promise<ProviderModelConfig[]>;
+	};
+	const hook = config?.refreshModels;
+	if (!hook) {
+		throw new Error(`provider ${id} registered without refreshModels`);
+	}
+	return hook;
+}
+
+/** Builds pi's refresh context; pi passes `force` when a recent probe must not be reused. */
+const refreshContext = (overrides: Partial<RefreshModelsContext> = {}): RefreshModelsContext => ({
+	signal: new AbortController().signal,
+	publish: async () => true,
+	allowNetwork: true,
+	...overrides,
+});
+
+describe("fetchInstanceModels", () => {
+	it("maps the live list and running states without touching registration", async () => {
+		const { provider, client } = await loadFresh();
+		client.fetchModels.mockResolvedValue([createEntry({ id: "model-1", context_length: 4096 })]);
+		mockFetch((url) =>
+			String(url).endsWith("/running")
+				? jsonResponse({ running: [{ model: "model-1", state: "ready" }] })
+				: jsonResponse({}),
+		);
+		const pi = createMockPi();
+
+		const result = await provider.fetchInstanceModels(createInstance());
+
+		expect(result.models).toEqual([
+			expect.objectContaining({ id: "model-1", contextWindow: 4096, name: "model-1 [🟢 running]" }),
+		]);
+		expect(result.runningStateByModel.get("model-1")).toBe("ready");
+		// pi publishes the returned list itself, so this pass must not register.
+		expect(pi.registerProvider).not.toHaveBeenCalled();
+		expect(pi.unregisterProvider).not.toHaveBeenCalled();
+	});
+
+	it("throws when the model probe fails, leaving the fallback to the caller", async () => {
+		const { provider, client } = await loadFresh();
+		client.fetchModels.mockRejectedValue(new Error("boom"));
+		stubEmptyRunning();
+
+		await expect(provider.fetchInstanceModels(createInstance())).rejects.toThrow("boom");
+	});
+});
+
+describe("refreshModels hook", () => {
+	it("is part of the registered provider config", () => {
+		const pi = createMockPi();
+		registerLlamaSwapProvider(pi as unknown as ExtensionAPI, createInstance(), oneModel());
+
+		expect(refreshHook(pi)).toBeTypeOf("function");
+	});
+
+	it("reuses a probe that just ran instead of round-tripping again", async () => {
+		const { provider, client } = await loadFresh();
+		client.fetchModels.mockResolvedValue([createEntry({ id: "model-1" })]);
+		stubEmptyRunning();
+		const pi = createMockPi();
+		await provider.refreshProvider(pi as unknown as ExtensionAPI, { instances: [createInstance()] });
+
+		// pi refreshes catalogs right after startup and twice per picker open.
+		const models = await refreshHook(pi)(refreshContext());
+
+		expect(models.map((m) => m.id)).toEqual(["model-1"]);
+		expect(client.fetchModels).toHaveBeenCalledTimes(1);
+	});
+
+	it("refetches when pi forces the refresh", async () => {
+		const { provider, client } = await loadFresh();
+		client.fetchModels.mockResolvedValue([createEntry({ id: "model-1" })]);
+		stubEmptyRunning();
+		const pi = createMockPi();
+		await provider.refreshProvider(pi as unknown as ExtensionAPI, { instances: [createInstance()] });
+
+		client.fetchModels.mockResolvedValue([createEntry({ id: "model-2" })]);
+		const models = await refreshHook(pi)(refreshContext({ force: true }));
+
+		expect(models.map((m) => m.id)).toEqual(["model-2"]);
+		expect(client.fetchModels).toHaveBeenCalledTimes(2);
+	});
+
+	it("returns the freshly fetched list without re-registering the provider", async () => {
+		const { provider, client } = await loadFresh();
+		client.fetchModels.mockResolvedValue([createEntry({ id: "model-1" })]);
+		stubEmptyRunning();
+		const pi = createMockPi();
+		await provider.refreshProvider(pi as unknown as ExtensionAPI, { instances: [createInstance()] });
+
+		// A model appeared on llama-swap after boot: the picker refresh must see it.
+		client.fetchModels.mockResolvedValue([createEntry({ id: "model-1" }), createEntry({ id: "model-2" })]);
+		const models = await refreshHook(pi)(refreshContext({ force: true }));
+
+		expect(models.map((m) => m.id)).toEqual(["model-1", "model-2"]);
+		expect(pi.registerProvider).toHaveBeenCalledTimes(1);
+		expect(pi.unregisterProvider).not.toHaveBeenCalled();
+	});
+
+	it("returns the last known list tagged down when the probe fails", async () => {
+		const { provider, client } = await loadFresh();
+		client.fetchModels.mockResolvedValue([createEntry({ id: "model-1" })]);
+		stubEmptyRunning();
+		const pi = createMockPi();
+		await provider.refreshProvider(pi as unknown as ExtensionAPI, { instances: [createInstance()] });
+
+		client.fetchModels.mockRejectedValue(new Error("boom"));
+		const models = await refreshHook(pi)(refreshContext({ force: true }));
+
+		expect(models).toEqual([expect.objectContaining({ id: "model-1", name: "model-1 [⛔ down]" })]);
+		expect(pi.registerProvider).toHaveBeenCalledTimes(1);
+	});
+
+	it("throws when no probe ever succeeded, so pi reports the failure", async () => {
+		const { client } = await loadFresh();
+		client.fetchModels.mockRejectedValue(new Error("boom"));
+		stubEmptyRunning();
+		const pi = createMockPi();
+		registerLlamaSwapProvider(pi as unknown as ExtensionAPI, createInstance(), []);
+
+		await expect(refreshHook(pi)(refreshContext({ force: true }))).rejects.toThrow("boom");
+	});
+
+	it("keeps a known-empty catalog empty instead of reporting an outage", async () => {
+		const { provider, client } = await loadFresh();
+		// llama-swap answers with no models: that is a valid empty catalog.
+		client.fetchModels.mockResolvedValue([]);
+		stubEmptyRunning();
+		const pi = createMockPi();
+		await provider.refreshProvider(pi as unknown as ExtensionAPI, { instances: [createInstance()] });
+
+		client.fetchModels.mockRejectedValue(new Error("boom"));
+		await expect(refreshHook(pi)(refreshContext({ force: true }))).resolves.toEqual([]);
+	});
+
+	it("passes the caller's cancellation to the model fetch", async () => {
+		const { provider, client } = await loadFresh();
+		client.fetchModels.mockResolvedValue([createEntry({ id: "model-1" })]);
+		stubEmptyRunning();
+		const pi = createMockPi();
+		await provider.refreshProvider(pi as unknown as ExtensionAPI, { instances: [createInstance()] });
+
+		let seenSignal: AbortSignal | undefined;
+		client.fetchModels.mockImplementation((_baseUrl: string, _apiKey?: string, signal?: AbortSignal) => {
+			seenSignal = signal;
+			return new Promise<never>((_resolve, reject) => {
+				signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+			});
+		});
+
+		const controller = new AbortController();
+		const pending = refreshHook(pi)(refreshContext({ signal: controller.signal, force: true }));
+		await new Promise((r) => setTimeout(r, 0));
+		expect(seenSignal?.aborted).toBe(false);
+
+		// Closing the picker aborts the refresh: the cancellation propagates.
+		controller.abort();
+		expect(seenSignal?.aborted).toBe(true);
+		await expect(pending).rejects.toThrow("aborted");
+
+		// A cancellation is not an outage: the next refresh must not report
+		// [⛔ down], whether it reuses the earlier healthy probe or fetches again.
+		client.fetchModels.mockResolvedValue([createEntry({ id: "model-1" })]);
+		const models = await refreshHook(pi)(refreshContext({ force: true }));
+		expect(models.map((m) => m.name)).toEqual(["model-1"]);
 	});
 });

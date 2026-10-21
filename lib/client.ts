@@ -2,6 +2,7 @@
  * HTTP client for llama-swap OpenAI-compatible API.
  */
 
+import { withAbortTimeout } from "./abort.js";
 import type { OpenAIModelEntry, OpenAIModelsListResponse } from "./types.js";
 
 const REQUEST_TIMEOUT_MS = 5_000;
@@ -40,24 +41,16 @@ export async function fetchModels(baseUrl: string, apiKey?: string, signal?: Abo
 		headers.Authorization = `Bearer ${apiKey}`;
 	}
 
-	const controller = new AbortController();
-	const abort = () => controller.abort();
-	if (signal?.aborted) {
-		abort();
-	} else {
-		signal?.addEventListener("abort", abort, { once: true });
-	}
-	const timeout = setTimeout(abort, REQUEST_TIMEOUT_MS);
+	const { signal: requestSignal, cleanup } = withAbortTimeout(signal, REQUEST_TIMEOUT_MS);
 
 	let response: Response;
 	try {
-		response = await fetch(url, { method: "GET", headers, signal: controller.signal });
+		response = await fetch(url, { method: "GET", headers, signal: requestSignal });
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		throw new LlamaSwapClientError(`Cannot reach llama-swap at ${url}: ${msg}`);
 	} finally {
-		clearTimeout(timeout);
-		signal?.removeEventListener("abort", abort);
+		cleanup();
 	}
 
 	if (!response.ok) {

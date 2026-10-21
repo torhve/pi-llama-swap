@@ -5,6 +5,7 @@ Pi coding agent extension that registers a **llama-swap** provider and discovers
 ## What it does
 
 - Injects provider `llama-swap` with models from `GET /v1/models`
+- Picks up models added to llama-swap after startup **without a restart**: pi refreshes provider catalogs when you open the `/model` picker (and at startup, on `/models`, and on `pi update --models`), and this extension answers that refresh with a live `GET /v1/models` — so a new model appears while you are choosing. A probe from the last second is reused rather than repeated, and a failed probe keeps the `[⛔ down]` list instead of emptying the picker.
 - Resolves per-model context from llama-swap APIs (`/v1/models`, `/running`) with 256K default — see [Context window](#context-window-per-model)
 - Enables image input for models that advertise vision support — from the `GET /v1/models` entry (`capabilities.vision` / `architecture.input_modalities`, so it works for models llama-swap has **not loaded yet**) and from a running model's `/props` (`vision`, `image`, or `multimodal`)
 - Marks models as reasoning-capable (thinking) when `/props` reports `chat_template_caps.supports_preserve_reasoning`
@@ -15,13 +16,22 @@ Pi coding agent extension that registers a **llama-swap** provider and discovers
 - Uses OpenAI Chat Completions API (`openai-completions`) for streaming
 - Reads optional config from `~/.pi/agent/pi-llama-swap.json` to override defaults
 
+## Model catalog refresh
+Pi has no "the model picker was opened" event. Instead it refreshes every provider's catalog at that moment (`ModelSelectorComponent` renders the cached snapshot immediately, then refreshes in the background with a 15s cap and cancels it if you close the picker). This extension registers a `refreshModels` hook, so opening `/model` re-reads `GET /v1/models` and pi publishes the returned list — a model llama-swap gained after startup shows up while you are choosing, with no restart or `/reload`.
+
+Deliberate choices:
+- **`context.allowNetwork` is ignored.** Pi only passes `allowNetwork: false` when `PI_OFFLINE` is set, and honouring it would freeze the catalog then. llama-swap is a local service, and pi's own llama.cpp extension likewise keeps local model discovery live under `PI_OFFLINE`, so these probes are treated as local.
+- **A probe from the last second is reused** (per instance) instead of repeated. Pi refreshes right after startup and twice per refresh, and a re-probe of a dead instance would otherwise cost another 3s timeout. `force` (e.g. `pi update --models`) always re-probes. Tradeoff: a picker opened within a second of a background probe can show a ≤1s stale list.
+- **Cancelling is not an outage.** An aborted refresh propagates to pi without down-tagging or caching, so a later refresh cannot inherit stale ` [⛔ down]` tags.
+- **No in-flight dedupe** between this hook and the event-driven probes; two refreshes racing can fetch twice. `/llama-swap-refresh` and the event handlers share one in-flight registration pass.
+
 ## Instance health
 Each refresh probes every configured instance independently, so one dead instance doesn't spam errors or block the healthy ones:
 
-- **` [⛔ down]` tag**: when an instance fails a refresh, its last known model list is re-registered with a trailing ` [⛔ down]` tag (replacing the `[🟢 running]`/`[🟡 starting]`/`[🟠 stopping]` tag). The tag drops automatically once the instance answers again. An instance that never succeeded (e.g. down at boot) registers empty.
+- **` [⛔ down]` tag**: when an instance fails a refresh, its last known model list is re-registered with a trailing ` [⛔ down]` tag (replacing the `[🟢 running]`/`[🟡 starting]`/`[🟠 stopping]` tag). The tag drops automatically once the instance answers again. An instance that never succeeded (e.g. down at boot) registers empty, and each catalog refresh then reports the failure through pi's own refresh error instead of inventing tags. Cancelling a refresh (closing the picker) is not treated as an outage.
 - **One warning per failure**: a new or changed per-instance error fires a single warning notification; the same error repeating stays silent. An instance that recovers gets one info notice.
 - **Failures at boot are quiet**: an instance already down when pi starts is not warned about — it shows via the `[⛔ down]` picker tag (or an empty provider) and you get the recovery notice once it comes back.
-- **Response-driven retries (no background timers)**: while the *own* instance of a model is down, or its process state is still `starting`/`stopping`, the next provider response re-probes. Each retry costs up to the 3s fetch timeout until the instance recovers. Probes also run at startup, on provider switch (30s cooldown), and via `/llama-swap-refresh`.
+- **Response-driven retries (no background timers)**: while the *own* instance of a model is down, or its process state is still `starting`/`stopping`, the next provider response re-probes. Each retry costs up to the 3s fetch timeout until the instance recovers. Probes also run at startup, when pi refreshes catalogs (opening the `/model` picker, `/models`, `pi update --models`), on provider switch (30s cooldown), and via `/llama-swap-refresh`.
 - A sibling instance's failure never blocks settling or re-probing of a healthy instance — health is judged per instance. `/llama-swap-refresh` always replies with a status line, even for an already-warned error.
 ## Requirements
 

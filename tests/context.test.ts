@@ -491,4 +491,31 @@ describe("buildModelLimits", () => {
 			imageInput: false,
 		});
 	});
+
+	it("stops the live probes when the caller cancels", async () => {
+		const urls: string[] = [];
+		const controller = new AbortController();
+		controller.abort();
+		mockFetch((url, init) => {
+			const u = typeof url === "string" ? url : url.toString();
+			urls.push(u);
+			if (init?.signal?.aborted) {
+				throw new DOMException("The operation was aborted.", "AbortError");
+			}
+			return jsonResponse({ running: [{ model: "model-1", proxy: "http://127.0.0.1:9000" }] });
+		});
+
+		const result = await buildModelLimits(
+			[createEntry({ id: "model-1", context_length: 4096 })],
+			createInstance(),
+			undefined,
+			controller.signal,
+		);
+
+		// Values from the /v1/models entries survive; the cancelled live pass adds nothing.
+		expect(result.contextByModel.get("model-1")).toBe(4096);
+		expect(result.runningStateByModel.size).toBe(0);
+		// The aborted /running probe never reached /props.
+		expect(urls.some((u) => u.includes("/props"))).toBe(false);
+	});
 });

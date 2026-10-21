@@ -4,12 +4,22 @@
  * pi provider id.
  */
 
-import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import { withAbortTimeout } from "./abort.js";
 import { fetchModels, LlamaSwapClientError } from "./client.js";
 import { DEFAULT_INSTANCE_ID, saveModelCapabilities } from "./config.js";
 import { buildModelLimits, resolveContextWindow, resolveMaxTokens } from "./context.js";
 import type { LlamaSwapConfig, LlamaSwapInstance, OpenAIModelEntry, RefreshResult } from "./types.js";
 import { buildBaseUrl } from "./url.js";
+
+/**
+ * pi's refresh context, derived from the registration contract so the package
+ * needs no direct dependency on pi-ai.
+ */
+export type RefreshModelsContext = Parameters<NonNullable<ProviderConfig["refreshModels"]>>[0];
+
+/** /v1/models fetch cap; pi's model picker allows 15s for a whole refresh. */
+const MODELS_FETCH_TIMEOUT_MS = 3_000;
 
 /** Provider id of the first (default) instance. */
 export const PROVIDER_ID = DEFAULT_INSTANCE_ID;
@@ -36,6 +46,17 @@ const lastKnownModelsByInstance = new Map<string, ProviderModelConfig[]>();
  * avoid unregister/register churn on every re-probe.
  */
 const downTaggedIds = new Set<string>();
+
+/**
+ * Outcome of the last probe per instance, reused by a catalog refresh that
+ * follows closely: pi refreshes catalogs right after startup and twice per
+ * picker open, and re-probing then would cost a second full round trip (or a
+ * second 3s timeout when the instance is down).
+ */
+const lastProbeByInstance = new Map<string, { at: number; models: ProviderModelConfig[] }>();
+
+/** Window in which a catalog refresh reuses the last probe. `force` bypasses it. */
+const REFRESH_REUSE_WINDOW_MS = 1_000;
 
 /**
  * Maps OpenAI model entries to pi provider model definitions.
@@ -135,7 +156,8 @@ function downTaggedModels(models: ProviderModelConfig[]): ProviderModelConfig[] 
 }
 
 /**
- * Registers one llama-swap provider with the given models.
+ * Registers one llama-swap provider with the given models, plus a
+ * `refreshModels` hook pi calls when it refreshes catalogs.
  * @param pi - Pi extension API.
  * @param instance - Connection settings for this instance.
  * @param models - Model list (may be empty).
@@ -153,6 +175,42 @@ export function registerLlamaSwapProvider(
 		baseUrl,
 		api: "openai-completions" as const,
 		models,
+		// pi calls this when it refreshes catalogs: opening the /model picker,
+		// startup, `/models`, and `pi update --models`. pi publishes whatever we
+		// return, so this only fetches — registering here would rebuild providers
+		// mid-refresh. A failed probe returns the last known list tagged down, so
+		// the picker keeps showing this instance's models instead of losing them.
+		// context.allowNetwork is deliberately ignored: llama-swap is a local
+		// service, and pi only passes allowNetwork:false under PI_OFFLINE — pi's own
+		// llama.cpp extension likewise keeps local model discovery live offline.
+		refreshModels: async (context: RefreshModelsContext): Promise<ProviderModelConfig[]> => {
+			// pi refreshes catalogs at startup and every time the picker opens, so
+			// reuse a probe that just ran rather than round-tripping again.
+			const recent = lastProbeByInstance.get(instance.id);
+			if (!context.force && recent && Date.now() - recent.at < REFRESH_REUSE_WINDOW_MS) {
+				return recent.models;
+			}
+			try {
+				const { models: refreshed } = await fetchInstanceModels(instance, { signal: context.signal });
+				downTaggedIds.delete(instance.id);
+				return refreshed;
+			} catch (err) {
+				// Closing the picker aborts the refresh. That is not evidence the
+				// instance is down, so report the cancellation unchanged and cache
+				// nothing: a later refresh must not inherit stale [⛔ down] tags.
+				if (context.signal.aborted) {
+					throw err;
+				}
+				const lastKnown = lastKnownModelsByInstance.get(instance.id);
+				if (!lastKnown) {
+					// Nothing cached to fall back on: let pi report the failure.
+					throw err;
+				}
+				const tagged = downTaggedModels(lastKnown);
+				lastProbeByInstance.set(instance.id, { at: Date.now(), models: tagged });
+				return tagged;
+			}
+		},
 		...(hasKey
 			? { apiKey: instance.apiKey, authHeader: true }
 			: models.length > 0
@@ -162,6 +220,75 @@ export function registerLlamaSwapProvider(
 
 	pi.registerProvider(instance.id, providerConfig);
 	registeredIds.add(instance.id);
+}
+
+/** Live model list of one instance, with the process states observed for it. */
+export interface InstanceModelFetch {
+	/** Pi-compatible model configs, status tags included. */
+	models: ProviderModelConfig[];
+	/** llama-swap process state per model id (from GET /running). */
+	runningStateByModel: Map<string, string>;
+}
+
+/**
+ * Fetches and maps one instance's live model list without touching pi's
+ * provider registration. Used by `refreshInstance`, which registers the
+ * result, and by `ProviderConfig.refreshModels`, where pi publishes the
+ * returned list itself — registering from there would rebuild providers in
+ * the middle of a refresh. Caches the list as this instance's last known one
+ * and persists newly discovered capabilities.
+ * @param instance - Instance connection settings.
+ * @param options - `signal`: caller cancellation (pi aborts a picker refresh).
+ * @returns Model configs plus the observed per-model process states.
+ * @throws When the `/v1/models` probe fails.
+ */
+export async function fetchInstanceModels(
+	instance: LlamaSwapInstance,
+	options?: { signal?: AbortSignal },
+): Promise<InstanceModelFetch> {
+	const baseUrl = buildBaseUrl(instance);
+	const { signal: fetchSignal, cleanup } = withAbortTimeout(options?.signal, MODELS_FETCH_TIMEOUT_MS);
+	let entries: OpenAIModelEntry[];
+	try {
+		entries = await fetchModels(baseUrl, instance.apiKey, fetchSignal);
+	} finally {
+		cleanup();
+	}
+
+	// Vision comes from the /v1/models entry flags, so an unloaded vision model
+	// is already image-capable here; /running + /props only add live context,
+	// reasoning support, and process state for models llama-swap has loaded.
+	const {
+		contextByModel,
+		maxTokensByModel,
+		imageInputByModel,
+		reasoningByModel,
+		detectedByModel,
+		runningStateByModel,
+	} = await buildModelLimits(entries, instance, instance.contextOverrides, options?.signal);
+	const models = mapOpenAIModelsToPi(
+		entries,
+		contextByModel,
+		maxTokensByModel,
+		imageInputByModel,
+		reasoningByModel,
+		runningStateByModel,
+	);
+	lastKnownModelsByInstance.set(instance.id, models);
+	lastProbeByInstance.set(instance.id, { at: Date.now(), models });
+
+	// ponyail: persist discovered capabilities so non-running models keep
+	// them on the next run (e.g. thinking support before the first request).
+	if (detectedByModel.size > 0) {
+		try {
+			await saveModelCapabilities(instance.id, Object.fromEntries(detectedByModel));
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			console.warn(`[llama-swap] failed to cache model capabilities: ${message}`);
+		}
+	}
+
+	return { models, runningStateByModel };
 }
 
 /**
@@ -179,51 +306,13 @@ async function refreshInstance(
 	const baseUrl = buildBaseUrl(instance);
 
 	try {
-		const modelsController = new AbortController();
-		const modelsTimeout = setTimeout(() => modelsController.abort(), 3000);
-		let entries: OpenAIModelEntry[];
-		try {
-			entries = await fetchModels(baseUrl, instance.apiKey, modelsController.signal);
-		} finally {
-			clearTimeout(modelsTimeout);
-		}
-		// Initial load probes only models already running (no model swaps). Vision
-		// comes from the /v1/models entry flags instead, so an unloaded vision
-		// model is registered image-capable before the first request.
-		const {
-			contextByModel,
-			maxTokensByModel,
-			imageInputByModel,
-			reasoningByModel,
-			detectedByModel,
-			runningStateByModel,
-		} = await buildModelLimits(entries, instance, instance.contextOverrides);
-		const models = mapOpenAIModelsToPi(
-			entries,
-			contextByModel,
-			maxTokensByModel,
-			imageInputByModel,
-			reasoningByModel,
-			runningStateByModel,
-		);
-		lastKnownModelsByInstance.set(instance.id, models);
+		const { models, runningStateByModel } = await fetchInstanceModels(instance);
 
 		if (registeredIds.has(instance.id)) {
 			pi.unregisterProvider(instance.id);
 		}
 		registerLlamaSwapProvider(pi, instance, models);
 		downTaggedIds.delete(instance.id);
-
-		// ponyail: persist discovered capabilities so non-running models keep
-		// them on the next run (e.g. thinking support before the first request).
-		if (detectedByModel.size > 0) {
-			try {
-				await saveModelCapabilities(instance.id, Object.fromEntries(detectedByModel));
-			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
-				console.warn(`[llama-swap] failed to cache model capabilities: ${message}`);
-			}
-		}
 
 		const runningStates: Record<string, string> = {};
 		for (const [modelId, state] of runningStateByModel) {
@@ -239,15 +328,22 @@ async function refreshInstance(
 			// Instance is down: keep its last good model list visible, tagged.
 			// The tagged list is stable, so re-register only on the healthy→down
 			// transition; repeated failures skip the unregister/register churn.
+			const tagged = downTaggedModels(lastKnown);
+			lastProbeByInstance.set(instance.id, { at: Date.now(), models: tagged });
 			if (!downTaggedIds.has(instance.id)) {
 				if (registeredIds.has(instance.id)) {
 					pi.unregisterProvider(instance.id);
 				}
-				registerLlamaSwapProvider(pi, instance, downTaggedModels(lastKnown));
+				registerLlamaSwapProvider(pi, instance, tagged);
 				downTaggedIds.add(instance.id);
 			}
 			return { baseUrl, modelCount: lastKnown.length, instanceId: instance.id, error: message };
 		}
+
+		// Nothing was ever discovered: record the empty outcome so pi's catalog
+		// refresh right after a failed startup reuses it instead of paying for a
+		// second fetch timeout on a dead instance.
+		lastProbeByInstance.set(instance.id, { at: Date.now(), models: [] });
 
 		if (options?.isInitial) {
 			registerLlamaSwapProvider(pi, instance, []);

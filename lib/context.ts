@@ -2,6 +2,7 @@
  * Resolve per-model context windows from llama-swap HTTP APIs only.
  */
 
+import { withAbortTimeout } from "./abort.js";
 import type { LlamaSwapInstance, ModelCapabilities, OpenAIModelEntry } from "./types.js";
 import { buildServerOrigin } from "./url.js";
 
@@ -225,16 +226,17 @@ export function parseContextFromCmd(cmd: string): number | undefined {
  * Fetches and parses a `/props` response.
  * @param url - Absolute `/props` URL.
  * @param headers - Optional request headers.
+ * @param signal - Optional caller abort signal.
  * @returns Props or undefined when the endpoint is unavailable or invalid.
  */
 async function fetchProps(
 	url: URL | string,
 	headers: Record<string, string> = { Accept: "application/json" },
+	signal?: AbortSignal,
 ): Promise<LlamaServerProps | undefined> {
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+	const { signal: requestSignal, cleanup } = withAbortTimeout(signal, REQUEST_TIMEOUT_MS);
 	try {
-		const response = await fetch(url, { method: "GET", headers, signal: controller.signal });
+		const response = await fetch(url, { method: "GET", headers, signal: requestSignal });
 		if (!response.ok) {
 			return undefined;
 		}
@@ -242,7 +244,7 @@ async function fetchProps(
 	} catch {
 		return undefined;
 	} finally {
-		clearTimeout(timeout);
+		cleanup();
 	}
 }
 
@@ -267,9 +269,14 @@ interface RunningModelInfo {
  * could block Pi startup.
  * @param serverOrigin - llama-swap root URL (no `/v1`).
  * @param apiKey - Optional Bearer token.
+ * @param signal - Optional caller abort signal; an abort leaves the map partial or empty.
  * @returns Map of model id → discovered info.
  */
-async function loadRunningModelInfo(serverOrigin: string, apiKey?: string): Promise<Map<string, RunningModelInfo>> {
+async function loadRunningModelInfo(
+	serverOrigin: string,
+	apiKey?: string,
+	signal?: AbortSignal,
+): Promise<Map<string, RunningModelInfo>> {
 	const result = new Map<string, RunningModelInfo>();
 	const url = `${serverOrigin.replace(/\/$/, "")}/running`;
 	const headers: Record<string, string> = { Accept: "application/json" };
@@ -277,17 +284,14 @@ async function loadRunningModelInfo(serverOrigin: string, apiKey?: string): Prom
 		headers.Authorization = `Bearer ${apiKey}`;
 	}
 
+	const { signal: requestSignal, cleanup } = withAbortTimeout(signal, REQUEST_TIMEOUT_MS);
 	let response: Response;
 	try {
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-		try {
-			response = await fetch(url, { method: "GET", headers, signal: controller.signal });
-		} finally {
-			clearTimeout(timeout);
-		}
+		response = await fetch(url, { method: "GET", headers, signal: requestSignal });
 	} catch {
 		return result;
+	} finally {
+		cleanup();
 	}
 	if (!response.ok) {
 		return result;
@@ -309,10 +313,10 @@ async function loadRunningModelInfo(serverOrigin: string, apiKey?: string): Prom
 
 			let props: LlamaServerProps | undefined;
 			if (proc.proxy) {
-				props = await fetchProps(`${proc.proxy.replace(/\/$/, "")}/props`, headers);
+				props = await fetchProps(`${proc.proxy.replace(/\/$/, "")}/props`, headers, signal);
 			}
 			if (!props) {
-				props = await fetchProps(`${origin}/props?model=${encodeURIComponent(proc.model)}`, headers);
+				props = await fetchProps(`${origin}/props?model=${encodeURIComponent(proc.model)}`, headers, signal);
 			}
 
 			let ctx: number | undefined = toPositiveInt(props?.default_generation_settings?.n_ctx);
@@ -339,12 +343,14 @@ async function loadRunningModelInfo(serverOrigin: string, apiKey?: string): Prom
  * @param entries - Models from GET /v1/models.
  * @param config - Instance connection settings.
  * @param overrides - Per-model context overrides (highest precedence).
+ * @param signal - Optional caller abort signal, passed to the live probes.
  * @returns Context/max-token/capability maps, discovered-only caps, and running state per model id.
  */
 export async function buildModelLimits(
 	entries: OpenAIModelEntry[],
 	config: LlamaSwapInstance,
 	overrides?: Record<string, number>,
+	signal?: AbortSignal,
 ): Promise<{
 	contextByModel: Map<string, number>;
 	maxTokensByModel: Map<string, number>;
@@ -388,7 +394,7 @@ export async function buildModelLimits(
 
 	const serverOrigin = buildServerOrigin(config);
 	const skipModels = overrides ? new Set(Object.keys(overrides)) : undefined;
-	const running = await loadRunningModelInfo(serverOrigin, config.apiKey);
+	const running = await loadRunningModelInfo(serverOrigin, config.apiKey, signal);
 	for (const [id, info] of running) {
 		// ponyail: models with context overrides keep their user-chosen size
 		if (!skipModels?.has(id) && info.ctx) {
