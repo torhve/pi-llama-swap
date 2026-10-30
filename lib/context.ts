@@ -36,6 +36,7 @@ interface LlamaServerProps {
 		n_ctx?: number;
 	};
 	chat_template_caps?: ChatTemplateCaps;
+	chat_template?: string;
 	capabilities?: unknown;
 	modalities?: unknown;
 	input?: unknown;
@@ -61,11 +62,51 @@ function toPositiveInt(value: unknown): number | undefined {
 }
 
 /**
- * Returns whether a model's chat template supports reasoning (thinking).
- * Checks `chat_template_caps.supports_preserve_reasoning` from /props.
+ * Template markers that show a chat template renders a reasoning block.
+ * Engines that are not llama.cpp answer /props without `chat_template_caps`, so
+ * the template text is the only reasoning signal they give.
  */
-function supportsReasoning(props: LlamaServerProps): boolean {
-	return props.chat_template_caps?.supports_preserve_reasoning === true;
+const REASONING_TEMPLATE_MARKERS: RegExp[] = [
+	/\benable_thinking\b/,
+	/\bpreserve_thinking\b/,
+	/\breasoning_content\b/,
+	/\breasoning_effort\b/,
+	/<\s*think(?:ing)?\s*>/,
+	/<\|thinking\|>/,
+];
+
+/**
+ * Returns whether chat template text renders a reasoning block.
+ * @param template - `chat_template` from /props, when the engine reports one.
+ */
+function templateIndicatesReasoning(template: string | undefined): boolean {
+	if (!template) {
+		return false;
+	}
+	return REASONING_TEMPLATE_MARKERS.some((marker) => marker.test(template));
+}
+
+/**
+ * Returns whether a model's engine supports reasoning (thinking).
+ * `chat_template_caps.supports_preserve_reasoning` wins when the engine reports
+ * it. Otherwise the chat template is read, because engines that are not
+ * llama.cpp publish the template but no capability flags. An engine reporting
+ * neither gives no signal, which is `undefined`: recording `false` there would
+ * write a thinking model into the capabilities cache as text-only, and pi would
+ * then refuse to think on it for every later pass.
+ * @param props - Parsed /props of a running model.
+ */
+export function detectReasoning(props: LlamaServerProps): boolean | undefined {
+	if (props.chat_template_caps?.supports_preserve_reasoning === true) {
+		return true;
+	}
+	if (templateIndicatesReasoning(props.chat_template)) {
+		return true;
+	}
+	if (props.chat_template_caps === undefined && props.chat_template === undefined) {
+		return undefined;
+	}
+	return false;
 }
 
 /**
@@ -392,6 +433,8 @@ export async function buildModelLimits(
 		}
 	}
 
+	/** Models whose engine signals thinking support; a silent engine stays out. */
+	const reasoningByModel = new Map<string, boolean>();
 	const serverOrigin = buildServerOrigin(config);
 	const skipModels = overrides ? new Set(Object.keys(overrides)) : undefined;
 	const running = await loadRunningModelInfo(serverOrigin, config.apiKey, signal);
@@ -412,7 +455,17 @@ export async function buildModelLimits(
 			if (imageInput) {
 				imageInputByModel.set(id, true);
 			}
-			recordDetected(id, { reasoning: supportsReasoning(info.props), imageInput });
+			const reasoning = detectReasoning(info.props);
+			if (reasoning === true) {
+				reasoningByModel.set(id, true);
+			}
+			// A model that gave no reasoning signal is recorded without one, so a
+			// later pass cannot overwrite what the cache already knows about it.
+			const caps: ModelCapabilities = { imageInput };
+			if (reasoning !== undefined) {
+				caps.reasoning = reasoning;
+			}
+			recordDetected(id, caps);
 		}
 		// Models listed by /running are live upstreams; tag them with their state.
 		runningStateByModel.set(id, info.state ?? "running");
@@ -438,11 +491,6 @@ export async function buildModelLimits(
 		}
 	}
 
-	const reasoningByModel = new Map(
-		[...running]
-			.filter(([, info]) => info.props && supportsReasoning(info.props))
-			.map(([id]) => [id, true] as const),
-	);
 	// ponyail: cached capabilities apply to models not running this pass
 	if (cached) {
 		for (const [id, caps] of Object.entries(cached)) {

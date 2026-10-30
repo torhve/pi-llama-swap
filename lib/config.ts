@@ -346,11 +346,13 @@ async function saveModelCapabilitiesLocked(instanceId: string, caps: Record<stri
 			// loaded right now reports false — either would otherwise register the
 			// model as text-only, and pi would then strip every image from the
 			// request. The cache is best knowledge across runs, not a snapshot of
-			// the last process that happened to be running.
+			// the last process that happened to be running. Reasoning has the same
+			// shape: an engine that publishes no capability flags reports nothing
+			// about thinking at all, which must not erase a known `true` either.
 			if (previous?.imageInput === true && discovered.imageInput === false) {
 				merged.imageInput = true;
 			}
-			if (previous?.reasoning === true && discovered.reasoning === false) {
+			if (previous?.reasoning === true && discovered.reasoning !== true) {
 				merged.reasoning = true;
 			}
 			existing[model] = merged;

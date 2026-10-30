@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	buildModelLimits,
 	DEFAULT_CONTEXT_WINDOW,
+	detectReasoning,
 	extractContextFromModelEntry,
 	extractMaxTokensFromModelEntry,
 	parseContextFromCmd,
@@ -204,6 +205,38 @@ describe("supportsImageInputEntry", () => {
 	});
 });
 
+// --- detectReasoning (unit) --------------------------------------------------
+
+describe("detectReasoning", () => {
+	it("takes the capability flag when the engine reports it true", () => {
+		expect(detectReasoning({ chat_template_caps: { supports_preserve_reasoning: true } })).toBe(true);
+	});
+
+	it("reads a think block from the template when the capability flag is false or absent", () => {
+		expect(
+			detectReasoning({
+				chat_template_caps: { supports_preserve_reasoning: false },
+				chat_template: "{{ '<think>' }}",
+			}),
+		).toBe(true);
+		expect(detectReasoning({ chat_template: "{%- if enable_thinking is true %}" })).toBe(true);
+		expect(detectReasoning({ chat_template: "{%- set r = reasoning_effort|default('xhigh') %}" })).toBe(true);
+		expect(detectReasoning({ chat_template: "{%- if preserve_thinking %}" })).toBe(true);
+		expect(detectReasoning({ chat_template: "{%- if reasoning_content %}" })).toBe(true);
+		expect(detectReasoning({ chat_template: "{{ '<|thinking|>' }}" })).toBe(true);
+	});
+
+	it("returns false when a reported template renders no reasoning", () => {
+		expect(detectReasoning({ chat_template: "{{ message.content }}" })).toBe(false);
+		expect(detectReasoning({ chat_template: "Just prose about thinking.", chat_template_caps: {} })).toBe(false);
+	});
+
+	it("returns undefined when the engine gives no reasoning signal at all", () => {
+		expect(detectReasoning({ default_generation_settings: { n_ctx: 2048 } })).toBeUndefined();
+		expect(detectReasoning({ modalities: { vision: true } })).toBeUndefined();
+	});
+});
+
 // --- buildModelLimits (fetch mocked) ---------------------------------------
 
 /**
@@ -264,7 +297,6 @@ describe("buildModelLimits", () => {
 		expect(result.runningStateByModel.get("model-1")).toBe("running");
 		expect(result.detectedByModel.get("model-1")).toEqual({
 			contextWindow: 8192,
-			reasoning: false,
 			imageInput: false,
 		});
 		// The proxy props URL was hit; the origin fallback was not.
@@ -329,6 +361,53 @@ describe("buildModelLimits", () => {
 
 		expect(result.detectedByModel.get("model-1")?.reasoning).toBe(true);
 		expect(result.reasoningByModel.get("model-1")).toBe(true);
+	});
+
+	it("detects reasoning from the chat template of a non-llama.cpp engine", async () => {
+		const template = "{%- if enable_thinking is true %}{{ reasoning_effort }}{% endif %}{{ '<think>' }}";
+		mockFetch(
+			withRunning(
+				jsonResponse({ running: [{ model: "basalt-model" }] }),
+				routeProps({
+					"basalt-model": {
+						chat_template: template,
+						modalities: { vision: true },
+						build_info: "basalt 0.1.0",
+					},
+				}),
+			),
+		);
+		const result = await buildModelLimits([createEntry({ id: "basalt-model" })], createInstance());
+
+		expect(result.detectedByModel.get("basalt-model")?.reasoning).toBe(true);
+		expect(result.reasoningByModel.get("basalt-model")).toBe(true);
+	});
+
+	it("records no reasoning flag for an engine that reports neither caps nor template", async () => {
+		mockFetch(
+			withRunning(
+				jsonResponse({ running: [{ model: "model-1" }] }),
+				routeProps({ "model-1": { default_generation_settings: { n_ctx: 2048 } } }),
+			),
+		);
+		const result = await buildModelLimits([createEntry({ id: "model-1" })], createInstance());
+
+		expect(result.reasoningByModel.has("model-1")).toBe(false);
+		expect("reasoning" in (result.detectedByModel.get("model-1") ?? {})).toBe(false);
+	});
+
+	it("keeps a cached reasoning true across a pass where the running engine says nothing", async () => {
+		const config = createInstance({ modelCapabilities: { "model-1": { reasoning: true } } });
+		mockFetch(
+			withRunning(
+				jsonResponse({ running: [{ model: "model-1" }] }),
+				routeProps({ "model-1": { default_generation_settings: { n_ctx: 2048 } } }),
+			),
+		);
+		const result = await buildModelLimits([createEntry({ id: "model-1" })], config);
+
+		expect(result.reasoningByModel.get("model-1")).toBe(true);
+		expect("reasoning" in (result.detectedByModel.get("model-1") ?? {})).toBe(false);
 	});
 
 	it("detects image input from the various /props shapes", async () => {
@@ -487,7 +566,6 @@ describe("buildModelLimits", () => {
 		expect(result.detectedByModel.has("cached-model")).toBe(false);
 		expect(result.detectedByModel.get("live-model")).toEqual({
 			contextWindow: 2048,
-			reasoning: false,
 			imageInput: false,
 		});
 	});

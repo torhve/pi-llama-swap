@@ -65,7 +65,8 @@ const REFRESH_REUSE_WINDOW_MS = 1_000;
  * @param maxTokensByModel - Resolved max output tokens per model id.
  * @param imageInputByModel - Image input per model id (GET /v1/models entry flags,
  *   live GET /props of a running model, or the capabilities cache).
- * @param reasoningByModel - Reasoning support reported by GET /props per model id.
+ * @param reasoningByModel - Models whose engine signals thinking support (the
+ *   /props capability flag, else a chat template that renders a think block).
  * @param runningStateByModel - llama-swap process state per model id (GET /running).
  * @returns Pi-compatible model configs.
  */
