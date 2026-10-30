@@ -1,10 +1,10 @@
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { readFileMock, writeFileMock, homedirMock } = vi.hoisted(() => ({
+const { readFileMock, writeFileMock, getAgentDirMock } = vi.hoisted(() => ({
 	readFileMock: vi.fn(),
 	writeFileMock: vi.fn(),
-	homedirMock: vi.fn(() => "/fake/home"),
+	getAgentDirMock: vi.fn(() => "/fake/home/.pi/agent"),
 }));
 
 vi.mock("node:fs/promises", () => ({
@@ -12,12 +12,12 @@ vi.mock("node:fs/promises", () => ({
 	writeFile: writeFileMock,
 }));
 
-vi.mock("node:os", async (importOriginal) => {
-	const original = await importOriginal<typeof import("node:os")>();
-	return { ...original, homedir: homedirMock };
-});
+vi.mock("@earendil-works/pi-coding-agent", () => ({
+	getAgentDir: getAgentDirMock,
+}));
 
 import {
+	agentDir,
 	applyEnvOverrides,
 	configPath,
 	loadConfig,
@@ -27,7 +27,8 @@ import {
 import type { LlamaSwapConfig } from "../lib/types.js";
 
 const FAKE_HOME = "/fake/home";
-const CONFIG_PATH = join(FAKE_HOME, ".pi", "agent", "pi-llama-swap.json");
+const FAKE_AGENT_DIR = join(FAKE_HOME, ".pi", "agent");
+const CONFIG_PATH = join(FAKE_AGENT_DIR, "pi-llama-swap.json");
 
 /** An ENOENT error, the shape fs rejects with when a file is missing. */
 function enoent(): NodeJS.ErrnoException {
@@ -53,16 +54,32 @@ function baseConfig(): LlamaSwapConfig {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	homedirMock.mockReturnValue(FAKE_HOME);
+	getAgentDirMock.mockReturnValue(FAKE_AGENT_DIR);
 });
 
 afterEach(() => {
 	vi.unstubAllEnvs();
 });
 
+describe("agentDir", () => {
+	it("uses the agent directory pi resolves", () => {
+		expect(agentDir()).toBe(FAKE_AGENT_DIR);
+	});
+
+	it("follows PI_CODING_AGENT_DIR through pi", () => {
+		getAgentDirMock.mockReturnValue("/custom/agent");
+		expect(agentDir()).toBe("/custom/agent");
+	});
+});
+
 describe("configPath", () => {
-	it("points to ~/.pi/agent/pi-llama-swap.json", () => {
+	it("points to <agent-dir>/pi-llama-swap.json", () => {
 		expect(configPath()).toBe(CONFIG_PATH);
+	});
+
+	it("writes inside PI_CODING_AGENT_DIR when pi reports one", () => {
+		getAgentDirMock.mockReturnValue("/custom/agent");
+		expect(configPath()).toBe("/custom/agent/pi-llama-swap.json");
 	});
 });
 

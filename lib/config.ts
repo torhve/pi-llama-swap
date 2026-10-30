@@ -1,5 +1,5 @@
 /**
- * Load llama-swap extension configuration from ~/.pi/agent/pi-llama-swap.json.
+ * Load llama-swap extension configuration from `<agent-dir>/pi-llama-swap.json`.
  *
  * Supports one or more llama-swap instances:
  *   - Legacy shape (single): top-level origin/port/basePath/apiKey/contextOverrides/modelCapabilities.
@@ -8,8 +8,8 @@
  */
 
 import { readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { LlamaSwapConfig, LlamaSwapInstance, ModelCapabilities } from "./types.js";
 import { defaultInstance, mergeConfig, parsePortArg, parseUrlArg } from "./url.js";
 
@@ -22,11 +22,20 @@ export const DEFAULT_INSTANCE_ID = "llama-swap";
 export const DEFAULT_INSTANCE_NAME = "Llama Swap";
 
 /**
- * Path to the config file under `~/.pi/agent/`.
+ * Directory holding the pi coding-agent config.
+ * Pi returns `PI_CODING_AGENT_DIR` when that variable is set, else `~/.pi/agent`.
+ * @returns Path to the agent directory.
+ */
+export function agentDir(): string {
+	return getAgentDir();
+}
+
+/**
+ * Path to the config file under the agent directory.
  * @returns Absolute path to pi-llama-swap.json.
  */
 export function configPath(): string {
-	return join(homedir(), ".pi", "agent", CONFIG_FILENAME);
+	return join(agentDir(), CONFIG_FILENAME);
 }
 
 /**
@@ -210,7 +219,7 @@ export function applyEnvOverrides(config: LlamaSwapConfig): LlamaSwapConfig {
 }
 
 /**
- * Loads config: defaults, optional ~/.pi/agent/pi-llama-swap.json, then env overrides.
+ * Loads config: defaults, optional `<agent-dir>/pi-llama-swap.json`, then env overrides.
  * @returns Effective connection settings (one or more instances).
  */
 export async function loadConfig(): Promise<LlamaSwapConfig> {

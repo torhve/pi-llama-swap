@@ -4,7 +4,7 @@
  *
  * Usage: pi -e /path/to/pi-llama-swap
  *
- * Config (optional): ~/.pi/agent/pi-llama-swap.json overrides defaults.
+ * Config (optional): <agent-dir>/pi-llama-swap.json overrides defaults.
  */
 
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";

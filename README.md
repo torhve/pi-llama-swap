@@ -14,7 +14,7 @@ Pi coding agent extension that registers a **llama-swap** provider and discovers
 - Caches discovered capabilities (thinking, vision, context window, max tokens) in the config file so pi knows them between runs, even for models that are not currently running — see [Model capabilities cache](#model-capabilities-cache)
 - For reasoning models, drives the chat template via `chat_template_kwargs` (`enable_thinking` + `reasoning_effort`): off → thinking disabled, minimal/low → `low`, medium → `medium`, high → `xhigh`
 - Uses OpenAI Chat Completions API (`openai-completions`) for streaming
-- Reads optional config from `~/.pi/agent/pi-llama-swap.json` to override defaults
+- Reads optional config from `<agent-dir>/pi-llama-swap.json` to override defaults — `<agent-dir>` is pi's agent directory, `~/.pi/agent` unless `PI_CODING_AGENT_DIR` sets another location
 
 ## Model catalog refresh
 Pi has no "the model picker was opened" event. Instead it refreshes every provider's catalog at that moment (`ModelSelectorComponent` renders the cached snapshot immediately, then refreshes in the background with a 15s cap and cancels it if you close the picker). This extension registers a `refreshModels` hook, so opening `/model` re-reads `GET /v1/models` and pi publishes the returned list — a model llama-swap gained after startup shows up while you are choosing, with no restart or `/reload`.
@@ -79,7 +79,7 @@ No config file needed when llama-swap runs on the defaults above.
 
 ### Config file
 
-Create `~/.pi/agent/pi-llama-swap.json` to override defaults. One instance (legacy shape):
+Create `<agent-dir>/pi-llama-swap.json` to override defaults. `<agent-dir>` is pi's agent directory: `~/.pi/agent`, or wherever `PI_CODING_AGENT_DIR` points. One instance (legacy shape):
 
 ```json
 {
@@ -114,7 +114,7 @@ Multiple llama-swap servers — use the `instances` array. Each entry registers 
 | `contextOverrides` | Per-model context overrides (model id → tokens). Use `/llama-swap-set-context-length` instead of editing manually. |
 | `modelCapabilities` | Auto-generated cache of discovered capabilities (model id → `{reasoning, imageInput, contextWindow, maxTokens}`). Written by the extension; safe to edit or delete. |
 
-Load order: **defaults → `~/.pi/agent/pi-llama-swap.json` → environment variables**.
+Load order: **defaults → `<agent-dir>/pi-llama-swap.json` → environment variables**.
 
 ### Context window (per model)
 
@@ -151,7 +151,7 @@ Without a key, extension uses placeholder `local-no-auth` so models appear in `/
 When the config file stores API keys, restrict its permissions:
 
 ```bash
-chmod 600 ~/.pi/agent/pi-llama-swap.json
+chmod 600 "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/pi-llama-swap.json"
 ```
 
 ## Troubleshooting
@@ -163,7 +163,7 @@ chmod 600 ~/.pi/agent/pi-llama-swap.json
 | 0 models | Ensure models in llama-swap config; `curl http://127.0.0.1:8080/v1/models` |
 | Extension loads but chat fails | Confirm model id; first request may load model (slow) |
 | Models show ` [⛔ down]` | That instance didn't answer the last probe; check it's running. Recovers automatically on the next probe |
-| Config ignored | File must be `~/.pi/agent/pi-llama-swap.json`; run `/llama-swap-refresh` after edits (or `/reload`/restart pi) |
+| Config ignored | File must be `<agent-dir>/pi-llama-swap.json`; run `/llama-swap-refresh` after edits (or `/reload`/restart pi) |
 | Images vanish from requests (`(image omitted: model does not support images)` in the llama-swap trace) | pi strips them when the model is registered text-only. Declare vision in llama-swap (`capabilities.in: [text, image]`) so `/v1/models` reports `architecture.input_modalities`, then run `/llama-swap-refresh` |
 
 ## Project layout
@@ -172,7 +172,7 @@ chmod 600 ~/.pi/agent/pi-llama-swap.json
 pi-llama-swap/
 ├── index.ts          # Extension entry
 ├── lib/
-│   ├── config.ts     # Load ~/.pi/agent/pi-llama-swap.json
+│   ├── config.ts     # Load <agent-dir>/pi-llama-swap.json
 │   ├── url.ts        # URL building
 │   ├── client.ts     # GET /v1/models
 │   ├── context.ts    # Context window from llama-swap APIs
