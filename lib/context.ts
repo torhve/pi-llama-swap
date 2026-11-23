@@ -339,27 +339,35 @@ export function parseContextFromCmd(cmd: string): number | undefined {
 	return undefined;
 }
 
+/** Outcome of one `/props` request. */
+interface PropsProbe {
+	/** Parsed body, absent when the response was not usable. */
+	props?: LlamaServerProps;
+	/** HTTP status, absent when the request never reached a response. */
+	status?: number;
+}
+
 /**
- * Fetches and parses a `/props` response.
+ * Fetches and parses one `/props` response, keeping the status code.
  * @param url - Absolute `/props` URL.
  * @param headers - Optional request headers.
  * @param signal - Optional caller abort signal.
- * @returns Props or undefined when the endpoint is unavailable or invalid.
+ * @returns The parsed props when the response was usable, and the status it carried.
  */
-async function fetchProps(
+async function probeProps(
 	url: URL | string,
 	headers: Record<string, string> = { Accept: "application/json" },
 	signal?: AbortSignal,
-): Promise<LlamaServerProps | undefined> {
+): Promise<PropsProbe> {
 	const { signal: requestSignal, cleanup } = withAbortTimeout(signal, REQUEST_TIMEOUT_MS);
 	try {
 		const response = await fetch(url, { method: "GET", headers, signal: requestSignal });
 		if (!response.ok) {
-			return undefined;
+			return { status: response.status };
 		}
-		return (await response.json()) as LlamaServerProps;
+		return { props: (await response.json()) as LlamaServerProps, status: response.status };
 	} catch {
-		return undefined;
+		return {};
 	} finally {
 		cleanup();
 	}
@@ -379,11 +387,19 @@ interface RunningModelInfo {
 
 /**
  * Fetches GET /running and discovers per-model info in a single pass.
- * For each running model, /props is fetched from the upstream proxy, with
- * llama-swap's own /props?model=… as fallback (remote instance: the proxy
- * is localhost on the swap host, unreachable from Pi's machine). Only
- * already-running models are queried, so no model swaps are started that
- * could block Pi startup.
+ * For each running model, `/props` is tried at three URLs, in order: the
+ * upstream `proxy` reported by `/running`; llama-swap's own `/props?model=…`;
+ * and llama-swap's `/upstream/<model>/props`. The first fails for a remote
+ * instance, where that proxy is a loopback port on the swap host. The second
+ * fails when the engine serves `/props` only for its own model name — Strata
+ * calls `qfn3.8-ud_iq2_xs` `qwen3.8-flash-next-ud_iq2_xs-strata` and answers
+ * the llama-swap id with `model not found`. The third carries the llama-swap
+ * id in the path, so llama-swap resolves the route and forwards a request
+ * that names no model. The `?model=` probe carries `autoload=false`, so llama-swap answers 409
+ * rather than loading a model that exited mid-pass. The `/upstream/…` probe follows only a 404
+ * from that probe — the one answer that proves an engine rejected the name — and only for a model
+ * `/running` reported ready, because `/upstream` honours no `autoload=false`. Only already-running
+ * models are queried, so no model swap is started that could block Pi startup.
  * @param serverOrigin - llama-swap root URL (no `/v1`).
  * @param apiKey - Optional Bearer token.
  * @param signal - Optional caller abort signal; an abort leaves the map partial or empty.
@@ -427,13 +443,34 @@ async function loadRunningModelInfo(
 			if (!proc.model) {
 				return;
 			}
-
 			let props: LlamaServerProps | undefined;
 			if (proc.proxy) {
-				props = await fetchProps(`${proc.proxy.replace(/\/$/, "")}/props`, headers, signal);
+				props = (await probeProps(`${proc.proxy.replace(/\/$/, "")}/props`, headers, signal)).props;
 			}
+
+			/**
+			 * A 404 on llama-swap's own `/props?model=` route is the only answer that proves the
+			 * request reached an engine and that the engine refused the name. Only then is the
+			 * unguarded `/upstream/<id>/props` route worth taking: `/upstream` honours no
+			 * `autoload=false`, so a request for a model that is no longer loaded loads it and can
+			 * evict the model in use. `autoload=false` answers 409 when the model exited after
+			 * `/running` was read, and a 5xx or a request that never got a response says nothing
+			 * about names, so none of those fall through.
+			 */
+			let engineRejectedName = false;
 			if (!props) {
-				props = await fetchProps(`${origin}/props?model=${encodeURIComponent(proc.model)}`, headers, signal);
+				const probe = await probeProps(
+					`${origin}/props?model=${encodeURIComponent(proc.model)}&autoload=false`,
+					headers,
+					signal,
+				);
+				props = probe.props;
+				engineRejectedName = probe.status === 404;
+			}
+			if (!props && engineRejectedName && proc.state === "ready") {
+				props = (
+					await probeProps(`${origin}/upstream/${encodeURIComponent(proc.model)}/props`, headers, signal)
+				).props;
 			}
 
 			let ctx: number | undefined = toPositiveInt(props?.default_generation_settings?.n_ctx);

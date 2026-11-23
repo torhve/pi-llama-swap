@@ -128,6 +128,17 @@ Discovered per-model capabilities — reasoning (thinking) support, image input,
 - **Used** at startup for models that are not currently running, so pi knows e.g. thinking support *before* the first request.
 - **Merged** per field: previously cached fields are kept unless re-discovered. A discovered `false` or a field the engine did not report never overwrites a cached `true` — `/props` has no vision field on older llama-server builds, a model whose multimodal projector is not loaded right now reports `false`, and a non-llama.cpp engine reports nothing about thinking, none of which should demote a capable model.
 
+For a running model, `/props` is fetched from three URLs in order, and the first answer wins: the
+engine's own `proxy` address from `/running`, then llama-swap's `/props?model=<id>`, then llama-swap's
+`/upstream/<id>/props`. The proxy address is a loopback port on the llama-swap host, so it fails when
+llama-swap runs on another machine. llama-swap passes `/props?model=<id>` to the engine with the model
+id unchanged, so an engine that serves `/props` only for its own model name rejects it: Strata calls
+`qfn3.8-ud_iq2_xs` `qwen3.8-flash-next-ud_iq2_xs-strata` and answers `model not found`. The third URL
+carries the llama-swap id in the path, so llama-swap selects the backend and forwards a request that
+names no model. Neither probe loads a model: `?model=` carries `autoload=false`, which makes llama-swap
+answer 409 instead of starting one, and `/upstream/<id>/props` runs only after that probe answers 404
+for a model `/running` reported ready. A reverse proxy in front of llama-swap must forward
+`/upstream/<id>/props` for that probe to work.
 Precedence (highest wins): user `contextOverrides` > live detection (`/running` + `/props`) > `/v1/models` entries > cache > defaults (256K context; max tokens default to half the context window, since servers typically run llama.cpp with `n_predict -1`). Image input is the exception: a `true` from **any** source wins, because llama-swap declares it per model in `/v1/models` even when the model is unloaded.
 
 You can delete the `modelCapabilities` block at any time — it rebuilds as models are used.

@@ -18,4 +18,11 @@ is staging for the next release. See `AGENTS.md` for the rules.
 - The extension sends no sampling overrides to any model. A reasoning budget is set in the engine's
   own config, such as `basalt_config.json`, or in pi's `modelOverrides` under `samplingParams`. Keep
   a budget below pi's `max_tokens` when the engine caps the whole reply at it.
+- Reads a running model's `/props` through llama-swap's `/upstream/<id>/props` when the engine's proxy
+  address and llama-swap's `/props?model=<id>` both give no answer. llama-swap forwards that query to
+  the engine unchanged, so an engine that serves `/props` only under its own model name rejects it —
+  Strata answers `model not found` for a llama-swap id — and the model was left with no thinking
+  support in pi. Neither probe loads a model: the `?model=` probe carries `autoload=false`, and the
+  `/upstream/…` probe runs only after that one answers 404, and only for a model `/running` reported
+  ready. A reverse proxy in front of llama-swap must forward that path.
 

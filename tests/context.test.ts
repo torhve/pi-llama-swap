@@ -395,7 +395,125 @@ describe("buildModelLimits", () => {
 
 		expect(result.contextByModel.get("model/1")).toBe(4096);
 		const urls = spy.mock.calls.map((c) => String(c[0]));
-		expect(urls).toContain("http://127.0.0.1:8080/props?model=model%2F1");
+		expect(urls).toContain("http://127.0.0.1:8080/props?model=model%2F1&autoload=false");
+	});
+
+	it("falls through to /upstream/<id>/props when /props?model= answers 404", async () => {
+		const strataProps = {
+			default_generation_settings: { n_ctx: 262144 },
+			build_info: "Strata 0.1.63",
+			chat_template: "{% if enable_thinking %}think{% endif %}",
+		};
+		const handler = (url: string | URL | Request): Response => {
+			const u = typeof url === "string" ? url : url.toString();
+			if (u.endsWith("/running")) {
+				return jsonResponse({
+					running: [{ model: "model-1", proxy: "http://127.0.0.1:9000", state: "ready" }],
+				});
+			}
+			if (u === "http://127.0.0.1:9000/props") {
+				return new Response("connection refused", { status: 502 });
+			}
+			if (u === "http://127.0.0.1:8080/upstream/model-1/props") {
+				return jsonResponse(strataProps);
+			}
+			return jsonResponse({ error: { message: "model not found" } }, 404);
+		};
+		const spy = mockFetch(handler);
+		const result = await buildModelLimits([createEntry({ id: "model-1" })], createInstance());
+
+		expect(result.contextByModel.get("model-1")).toBe(262144);
+		expect(result.reasoningByModel.get("model-1")).toBe(true);
+		expect(result.detectedByModel.get("model-1")).toEqual({
+			contextWindow: 262144,
+			imageInput: false,
+			reasoning: true,
+			engine: "strata",
+			engineBuild: "Strata 0.1.63",
+		});
+		const urls = spy.mock.calls.map((c) => String(c[0]));
+		expect(urls).toContain("http://127.0.0.1:8080/upstream/model-1/props");
+	});
+
+	it("does not probe /upstream when the engine answers /props?model=", async () => {
+		const spy = mockFetch(
+			withRunning(
+				jsonResponse({ running: [{ model: "qwen-basalt" }] }),
+				routeProps({
+					"qwen-basalt": {
+						default_generation_settings: { n_ctx: 196608 },
+						basalt: { capabilities: ["answer_now"] },
+					},
+				}),
+			),
+		);
+		const result = await buildModelLimits([createEntry({ id: "qwen-basalt" })], createInstance());
+
+		expect(result.detectedByModel.get("qwen-basalt")).toEqual({
+			contextWindow: 196608,
+			imageInput: false,
+			engine: "basalt",
+			answerNow: true,
+		});
+		const urls = spy.mock.calls.map((c) => String(c[0]));
+		expect(urls.some((u) => u.includes("/upstream/"))).toBe(false);
+	});
+
+	it("does not probe /upstream for a model that is not ready", async () => {
+		const spy = mockFetch(
+			withRunning(jsonResponse({ running: [{ model: "model-1", state: "starting" }] }), () =>
+				jsonResponse({ error: { message: "model not found" } }, 404),
+			),
+		);
+		const result = await buildModelLimits([createEntry({ id: "model-1" })], createInstance());
+
+		expect(result.runningStateByModel.get("model-1")).toBe("starting");
+		const urls = spy.mock.calls.map((c) => String(c[0]));
+		expect(urls.some((u) => u.includes("/upstream/"))).toBe(false);
+	});
+
+	it("does not probe /upstream when autoload=false refused to load the model", async () => {
+		const busy = jsonResponse(
+			{
+				src: "llama-swap",
+				error: { message: "model model-1 is not loaded; autoload=false requests cannot start it" },
+			},
+			409,
+		);
+		const spy = mockFetch(
+			withRunning(jsonResponse({ running: [{ model: "model-1", state: "ready" }] }), () => busy),
+		);
+
+		await buildModelLimits([createEntry({ id: "model-1" })], createInstance());
+
+		const urls = spy.mock.calls.map((c) => String(c[0]));
+		expect(urls.some((u) => u.includes("/upstream/"))).toBe(false);
+	});
+
+	it("does not probe /upstream when /props?model= gives no answer at all", async () => {
+		const spy = mockFetch(
+			withRunning(jsonResponse({ running: [{ model: "model-1", state: "ready" }] }), () => {
+				throw new Error("fetch failed");
+			}),
+		);
+
+		await buildModelLimits([createEntry({ id: "model-1" })], createInstance());
+
+		const urls = spy.mock.calls.map((c) => String(c[0]));
+		expect(urls.some((u) => u.includes("/upstream/"))).toBe(false);
+	});
+
+	it("does not probe /upstream when /running reports no state", async () => {
+		const spy = mockFetch(
+			withRunning(jsonResponse({ running: [{ model: "model-1" }] }), () =>
+				jsonResponse({ error: { message: "model not found" } }, 404),
+			),
+		);
+
+		await buildModelLimits([createEntry({ id: "model-1" })], createInstance());
+
+		const urls = spy.mock.calls.map((c) => String(c[0]));
+		expect(urls.some((u) => u.includes("/upstream/"))).toBe(false);
 	});
 
 	it("falls back to the origin /props when the proxy returns 500", async () => {
@@ -418,7 +536,7 @@ describe("buildModelLimits", () => {
 		expect(result.contextByModel.get("model-1")).toBe(4096);
 		const urls = spy.mock.calls.map((c) => String(c[0]));
 		expect(urls).toContain("http://127.0.0.1:9000/props");
-		expect(urls).toContain("http://127.0.0.1:8080/props?model=model-1");
+		expect(urls).toContain("http://127.0.0.1:8080/props?model=model-1&autoload=false");
 	});
 
 	it("sets reasoning when chat_template_caps.supports_preserve_reasoning is true", async () => {
