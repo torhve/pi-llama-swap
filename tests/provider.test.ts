@@ -85,6 +85,11 @@ describe("mapOpenAIModelsToPi", () => {
 		reason: new Map<string, boolean>(),
 	});
 
+	// `samplingParams` reaches pi's model config from pi 1.x. The pinned type
+	// package predates it, so the field is read through a cast here.
+	const samplingParamsOf = (m: ProviderModelConfig): Record<string, unknown> | undefined =>
+		(m as { samplingParams?: Record<string, unknown> }).samplingParams;
+
 	it("maps id and name, falling back to id when name is missing or empty", () => {
 		const { ctx, max, img, reason } = emptyMaps();
 		const [withName, missing, empty] = mapOpenAIModelsToPi(
@@ -149,6 +154,16 @@ describe("mapOpenAIModelsToPi", () => {
 		expect(missing.reasoning).toBe(false);
 		expect(missing.thinkingLevelMap).toBeUndefined();
 		expect(missing.compat).toBeUndefined();
+	});
+
+	it("never adds a reasoning budget to a mapped model", () => {
+		const { ctx, max, img } = emptyMaps();
+		const reason = new Map([["m1", true]]);
+		const mapped = mapOpenAIModelsToPi([{ id: "m1" }, { id: "m2" }], ctx, max, img, reason);
+
+		for (const model of mapped) {
+			expect(samplingParamsOf(model)).toBeUndefined();
+		}
 	});
 
 	it("tags the model name with the running state", () => {

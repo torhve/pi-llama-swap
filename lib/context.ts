@@ -3,7 +3,7 @@
  */
 
 import { withAbortTimeout } from "./abort.js";
-import type { LlamaSwapInstance, ModelCapabilities, OpenAIModelEntry } from "./types.js";
+import type { DetectedEngine, LlamaSwapInstance, ModelCapabilities, OpenAIModelEntry } from "./types.js";
 import { buildServerOrigin } from "./url.js";
 
 /** Default context when llama-swap APIs do not report one (256K). */
@@ -32,6 +32,10 @@ interface ChatTemplateCaps {
 
 /** llama-server /props response (subset). */
 interface LlamaServerProps {
+	/** The engine's own build string, as llama.cpp and Strata write it. */
+	build_info?: unknown;
+	/** Present when llama-swap refused to answer for this model. */
+	error?: unknown;
 	default_generation_settings?: {
 		n_ctx?: number;
 	};
@@ -43,6 +47,11 @@ interface LlamaServerProps {
 	vision?: unknown;
 	supports_vision?: unknown;
 	supports_images?: unknown;
+	/** Basalt-specific props block. Absent on llama.cpp and on llama-swap's own props. */
+	basalt?: {
+		version?: unknown;
+		capabilities?: unknown;
+	};
 }
 
 /**
@@ -107,6 +116,73 @@ export function detectReasoning(props: LlamaServerProps): boolean | undefined {
 		return undefined;
 	}
 	return false;
+}
+
+/**
+ * Returns whether the engine accepts `POST /v1/answer_now` to end a running
+ * reply's thinking. Basalt advertises it as `basalt.capabilities` in /props.
+ * An engine that gives no such signal returns `undefined`, matching
+ * detectReasoning: recording `false` from a read that returned nothing would
+ * cache a basalt model as unable to answer now.
+ * @param props - Parsed /props of a running model.
+ */
+export function detectAnswerNow(props: LlamaServerProps): boolean | undefined {
+	const block = props.basalt;
+	if (!block || typeof block !== "object") {
+		return undefined;
+	}
+	if (Array.isArray(block.capabilities)) {
+		return block.capabilities.some((item) => item === "answer_now");
+	}
+	return false;
+}
+
+/** Longest `engineBuild` value stored in the config file. */
+const ENGINE_BUILD_MAX_LENGTH = 120;
+
+/**
+ * Names the engine behind a model from the signals its `/props` carries, using
+ * the same signals pi-answer-now reads: a `basalt` block names Basalt, a
+ * `build_info` that starts with `strata` names Strata, and a `build_info` of the
+ * form `b9468-354ebac8` names llama.cpp.
+ *
+ * Only a positive signal names an engine. A response that carries none returns
+ * `undefined`, so a consumer has one absent state to fall back from. That covers
+ * llama-swap's props stub for an engine it cannot reach, and the error body it
+ * answers for a model it refused to load: neither proves anything about an engine.
+ * @param props - Parsed /props of a running model.
+ * @returns The engine name, and its build string when the engine gave one.
+ */
+export function detectEngine(props: LlamaServerProps): DetectedEngine | undefined {
+	if (!props || typeof props !== "object" || "error" in props) {
+		return undefined;
+	}
+	if (props.basalt && typeof props.basalt === "object") {
+		return { id: "basalt" };
+	}
+	const build = toEngineBuild(props.build_info);
+	if (build === undefined) {
+		return undefined;
+	}
+	if (build.toLowerCase().startsWith("strata")) {
+		return { id: "strata", build };
+	}
+	if (/^b\d+/i.test(build)) {
+		return { id: "llamacpp", build };
+	}
+	return undefined;
+}
+
+/** Trims a raw `build_info` value to a storable size, or returns undefined. */
+function toEngineBuild(value: unknown): string | undefined {
+	if (typeof value !== "string") {
+		return undefined;
+	}
+	const trimmed = value.trim();
+	if (trimmed === "") {
+		return undefined;
+	}
+	return trimmed.slice(0, ENGINE_BUILD_MAX_LENGTH);
 }
 
 /**
@@ -464,6 +540,17 @@ export async function buildModelLimits(
 			const caps: ModelCapabilities = { imageInput };
 			if (reasoning !== undefined) {
 				caps.reasoning = reasoning;
+			}
+			const answerNow = detectAnswerNow(info.props);
+			if (answerNow !== undefined) {
+				caps.answerNow = answerNow;
+			}
+			const engine = detectEngine(info.props);
+			if (engine !== undefined) {
+				caps.engine = engine.id;
+				if (engine.build !== undefined) {
+					caps.engineBuild = engine.build;
+				}
 			}
 			recordDetected(id, caps);
 		}

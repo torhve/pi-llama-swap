@@ -12,7 +12,8 @@
   },
   "files": [
     "index.ts",
-    "lib"
+    "lib",
+    "CHANGELOG.md"
   ],
   "pi": {
     "extensions": [

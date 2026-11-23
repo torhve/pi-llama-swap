@@ -10,7 +10,13 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { LlamaSwapConfig, LlamaSwapInstance, ModelCapabilities } from "./types.js";
+import {
+	KNOWN_ENGINES,
+	type LlamaSwapConfig,
+	type LlamaSwapInstance,
+	type ModelCapabilities,
+	type PiLlamaSwapEngine,
+} from "./types.js";
 import { defaultInstance, mergeConfig, parsePortArg, parseUrlArg } from "./url.js";
 
 const CONFIG_FILENAME = "pi-llama-swap.json";
@@ -149,6 +155,15 @@ function normalizeCapabilities(value: unknown): Record<string, ModelCapabilities
 		}
 		if (typeof record.maxTokens === "number" && Number.isInteger(record.maxTokens) && record.maxTokens > 0) {
 			entry.maxTokens = record.maxTokens;
+		}
+		if (typeof record.answerNow === "boolean") {
+			entry.answerNow = record.answerNow;
+		}
+		if (typeof record.engine === "string" && (KNOWN_ENGINES as readonly string[]).includes(record.engine)) {
+			entry.engine = record.engine as PiLlamaSwapEngine;
+		}
+		if (typeof record.engineBuild === "string" && record.engineBuild.trim() !== "") {
+			entry.engineBuild = record.engineBuild.trim();
 		}
 		if (Object.keys(entry).length > 0) {
 			out[model] = entry;
@@ -363,6 +378,20 @@ async function saveModelCapabilitiesLocked(instanceId: string, caps: Record<stri
 			}
 			if (previous?.reasoning === true && discovered.reasoning !== true) {
 				merged.reasoning = true;
+			}
+			// answerNow and engine get no stale-true rule. A props read that returned
+			// nothing records neither field, so a value that arrives here came from a
+			// read that actually answered. A cached engine is the last engine
+			// detected: it goes stale when a swapped backend stops signalling, and a
+			// consumer must expect that.
+			if (
+				discovered.engine !== undefined &&
+				previous?.engine !== undefined &&
+				previous.engine !== discovered.engine &&
+				discovered.engineBuild === undefined
+			) {
+				// A build string must not outlive the engine it came from.
+				delete merged.engineBuild;
 			}
 			existing[model] = merged;
 		}

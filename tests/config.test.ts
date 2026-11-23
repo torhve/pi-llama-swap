@@ -118,6 +118,33 @@ describe("loadConfig", () => {
 		expect(inst.apiKey).toBe("legacy-key");
 		expect(inst.contextOverrides).toEqual({ "model-a": 8192 });
 	});
+	it("keeps a known engine name and drops an engine it cannot name from the cache", async () => {
+		readFileMock.mockResolvedValue(
+			JSON.stringify({
+				instances: [
+					{
+						id: "llama-swap",
+						modelCapabilities: {
+							"basalt-model": { engine: "basalt" },
+							"odd-model": { engine: "audiocpp" },
+							"num-model": { engine: 42 },
+							"build-model": { engine: "llamacpp", engineBuild: "  b9468-354ebac8  " },
+							"empty-build": { engine: "llamacpp", engineBuild: "   " },
+						},
+					},
+				],
+			}),
+		);
+
+		const config = await loadConfig();
+		const caps = config.instances[0].modelCapabilities ?? {};
+
+		expect(caps["basalt-model"]).toEqual({ engine: "basalt" });
+		expect(caps["odd-model"]).toBeUndefined();
+		expect(caps["num-model"]).toBeUndefined();
+		expect(caps["build-model"]).toEqual({ engine: "llamacpp", engineBuild: "b9468-354ebac8" });
+		expect(caps["empty-build"]).toEqual({ engine: "llamacpp" });
+	});
 
 	it("parses the multi-instance shape, generating ids and names for entries that lack them", async () => {
 		readFileMock.mockResolvedValue(
@@ -351,6 +378,72 @@ describe("saveModelCapabilities", () => {
 			expect.objectContaining({
 				modelCapabilities: { "model-a": { imageInput: true, reasoning: true, contextWindow: 8192 } },
 			}),
+		]);
+	});
+
+	it("keeps a cached engine when a fresh read names none", async () => {
+		readFileMock.mockResolvedValue(
+			JSON.stringify({
+				instances: [
+					{
+						id: "llama-swap",
+						modelCapabilities: { "model-a": { engine: "llamacpp", engineBuild: "b9468-354ebac8" } },
+					},
+				],
+			}),
+		);
+		writeFileMock.mockResolvedValue(undefined);
+
+		await saveModelCapabilities("llama-swap", { "model-a": { contextWindow: 8192 } });
+
+		expect(lastWritten().instances).toEqual([
+			expect.objectContaining({
+				modelCapabilities: {
+					"model-a": { engine: "llamacpp", engineBuild: "b9468-354ebac8", contextWindow: 8192 },
+				},
+			}),
+		]);
+	});
+
+	it("replaces a cached engine when a fresh read names another one", async () => {
+		readFileMock.mockResolvedValue(
+			JSON.stringify({
+				instances: [
+					{
+						id: "llama-swap",
+						modelCapabilities: { "model-a": { engine: "llamacpp", engineBuild: "b9468-354ebac8" } },
+					},
+				],
+			}),
+		);
+		writeFileMock.mockResolvedValue(undefined);
+
+		await saveModelCapabilities("llama-swap", { "model-a": { engine: "strata", engineBuild: "strata 0.2.0" } });
+
+		expect(lastWritten().instances).toEqual([
+			expect.objectContaining({
+				modelCapabilities: { "model-a": { engine: "strata", engineBuild: "strata 0.2.0" } },
+			}),
+		]);
+	});
+
+	it("drops a cached build string when the engine changes and the new read gives none", async () => {
+		readFileMock.mockResolvedValue(
+			JSON.stringify({
+				instances: [
+					{
+						id: "llama-swap",
+						modelCapabilities: { "model-a": { engine: "llamacpp", engineBuild: "b9468-354ebac8" } },
+					},
+				],
+			}),
+		);
+		writeFileMock.mockResolvedValue(undefined);
+
+		await saveModelCapabilities("llama-swap", { "model-a": { engine: "basalt" } });
+
+		expect(lastWritten().instances).toEqual([
+			expect.objectContaining({ modelCapabilities: { "model-a": { engine: "basalt" } } }),
 		]);
 	});
 

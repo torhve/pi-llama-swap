@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	buildModelLimits,
 	DEFAULT_CONTEXT_WINDOW,
+	detectAnswerNow,
+	detectEngine,
 	detectReasoning,
 	extractContextFromModelEntry,
 	extractMaxTokensFromModelEntry,
@@ -237,6 +239,31 @@ describe("detectReasoning", () => {
 	});
 });
 
+// --- detectAnswerNow (unit) --------------------------------------------------
+
+describe("detectAnswerNow", () => {
+	it("takes the capability when the engine lists answer_now", () => {
+		expect(detectAnswerNow({ basalt: { version: "0.3.3", capabilities: ["answer_now", "logprobs"] } })).toBe(true);
+	});
+
+	it("returns false when the engine lists capabilities without answer_now", () => {
+		expect(detectAnswerNow({ basalt: { capabilities: ["logprobs", "documents"] } })).toBe(false);
+	});
+
+	it("returns undefined when the engine reports no basalt block", () => {
+		expect(detectAnswerNow({ default_generation_settings: { n_ctx: 2048 } })).toBeUndefined();
+		expect(detectAnswerNow({ chat_template: "{{ '<think>' }}" })).toBeUndefined();
+	});
+
+	it("ignores llama.cpp's own capabilities field, which never carries answer_now", () => {
+		expect(detectAnswerNow({ capabilities: ["answer_now"] })).toBeUndefined();
+	});
+
+	it("returns false when basalt reports no capabilities list", () => {
+		expect(detectAnswerNow({ basalt: { version: "0.3.3" } })).toBe(false);
+	});
+});
+
 // --- buildModelLimits (fetch mocked) ---------------------------------------
 
 /**
@@ -271,6 +298,50 @@ function routeProps(originByModel: Record<string, unknown>, proxyProps?: unknown
 		return jsonResponse(proxyProps ?? {});
 	};
 }
+
+describe("detectEngine", () => {
+	it("names basalt when /props carries a basalt block", () => {
+		expect(detectEngine({ basalt: { version: "0.4.1", capabilities: ["answer_now"] } })).toEqual({ id: "basalt" });
+	});
+
+	it("names strata from a build string that starts with strata", () => {
+		expect(detectEngine({ build_info: "strata 0.2.0" })).toEqual({ id: "strata", build: "strata 0.2.0" });
+	});
+
+	it("names llama.cpp from a build string of the form b9468-354ebac8", () => {
+		expect(detectEngine({ build_info: "b9468-354ebac8" })).toEqual({ id: "llamacpp", build: "b9468-354ebac8" });
+	});
+
+	it("trims the build string before storing it", () => {
+		expect(detectEngine({ build_info: "  b9468-354ebac8 " })).toEqual({ id: "llamacpp", build: "b9468-354ebac8" });
+	});
+
+	it("caps a long build string at 120 characters", () => {
+		const detected = detectEngine({ build_info: `b1-${"x".repeat(300)}` });
+
+		expect(detected?.id).toBe("llamacpp");
+		expect(detected?.build).toHaveLength(120);
+	});
+
+	it("names nothing when the props carry no engine signal", () => {
+		expect(detectEngine({ chat_template: "{{ '<think>' }}" })).toBeUndefined();
+		expect(detectEngine({ build_info: "built locally" })).toBeUndefined();
+		expect(detectEngine({ build_info: "" })).toBeUndefined();
+		expect(detectEngine({ build_info: 42 })).toBeUndefined();
+	});
+
+	it("names nothing for the error body llama-swap answers for a model it refused to load", () => {
+		expect(detectEngine({ error: { message: "model is not loaded" } })).toBeUndefined();
+	});
+
+	it("names nothing for llama-swap's own props stub", () => {
+		expect(detectEngine({ default_generation_settings: { n_ctx: 2048 } })).toBeUndefined();
+	});
+
+	it("keeps the basalt signal ahead of a build string", () => {
+		expect(detectEngine({ basalt: {}, build_info: "b9468-354ebac8" })).toEqual({ id: "basalt" });
+	});
+});
 
 describe("buildModelLimits", () => {
 	it("returns only /v1/models-derived values when /running is unreachable", async () => {
@@ -408,6 +479,110 @@ describe("buildModelLimits", () => {
 
 		expect(result.reasoningByModel.get("model-1")).toBe(true);
 		expect("reasoning" in (result.detectedByModel.get("model-1") ?? {})).toBe(false);
+	});
+
+	it("records answerNow true from a running engine that advertises the capability", async () => {
+		mockFetch(
+			withRunning(
+				jsonResponse({ running: [{ model: "basalt-model" }] }),
+				routeProps({
+					"basalt-model": {
+						chat_template: "{{ '<think>' }}",
+						basalt: { version: "0.3.3", capabilities: ["answer_now", "logprobs", "documents"] },
+					},
+				}),
+			),
+		);
+		const result = await buildModelLimits([createEntry({ id: "basalt-model" })], createInstance());
+
+		expect(result.detectedByModel.get("basalt-model")?.answerNow).toBe(true);
+	});
+
+	it("records answerNow false from a running engine that reports basalt without it", async () => {
+		mockFetch(
+			withRunning(
+				jsonResponse({ running: [{ model: "basalt-model" }] }),
+				routeProps({ "basalt-model": { basalt: { version: "0.2.1", capabilities: ["logprobs"] } } }),
+			),
+		);
+		const result = await buildModelLimits([createEntry({ id: "basalt-model" })], createInstance());
+
+		expect(result.detectedByModel.get("basalt-model")?.answerNow).toBe(false);
+	});
+
+	it("records no answerNow flag for an engine whose props carry no basalt block", async () => {
+		mockFetch(
+			withRunning(
+				jsonResponse({ running: [{ model: "model-1" }] }),
+				routeProps({ "model-1": { chat_template: "{{ '<think>' }}", capabilities: ["vision"] } }),
+			),
+		);
+		const result = await buildModelLimits([createEntry({ id: "model-1" })], createInstance());
+
+		expect("answerNow" in (result.detectedByModel.get("model-1") ?? {})).toBe(false);
+	});
+
+	it("records the engine from a running Basalt engine", async () => {
+		mockFetch(
+			withRunning(
+				jsonResponse({ running: [{ model: "basalt-model" }] }),
+				routeProps({ "basalt-model": { basalt: { version: "0.4.1", capabilities: ["answer_now"] } } }),
+			),
+		);
+		const result = await buildModelLimits([createEntry({ id: "basalt-model" })], createInstance());
+
+		expect(result.detectedByModel.get("basalt-model")?.engine).toBe("basalt");
+		expect(result.detectedByModel.get("basalt-model")?.engineBuild).toBeUndefined();
+	});
+
+	it("records the build string from a running llama.cpp engine", async () => {
+		mockFetch(
+			withRunning(
+				jsonResponse({ running: [{ model: "llamacpp-model" }] }),
+				routeProps({ "llamacpp-model": { chat_template: "{{ '<think>' }}", build_info: " b9468-354ebac8 " } }),
+			),
+		);
+		const result = await buildModelLimits([createEntry({ id: "llamacpp-model" })], createInstance());
+
+		expect(result.detectedByModel.get("llamacpp-model")?.engine).toBe("llamacpp");
+		expect(result.detectedByModel.get("llamacpp-model")?.engineBuild).toBe("b9468-354ebac8");
+	});
+
+	it("records the engine from a running Strata engine", async () => {
+		mockFetch(
+			withRunning(
+				jsonResponse({ running: [{ model: "strata-model" }] }),
+				routeProps({ "strata-model": { build_info: "strata 0.2.0" } }),
+			),
+		);
+		const result = await buildModelLimits([createEntry({ id: "strata-model" })], createInstance());
+
+		expect(result.detectedByModel.get("strata-model")?.engine).toBe("strata");
+	});
+
+	it("records no engine for an engine whose props carry no engine signal", async () => {
+		mockFetch(
+			withRunning(
+				jsonResponse({ running: [{ model: "model-1" }] }),
+				routeProps({ "model-1": { chat_template: "{{ '<think>' }}", build_info: "built locally" } }),
+			),
+		);
+		const result = await buildModelLimits([createEntry({ id: "model-1" })], createInstance());
+
+		expect("engine" in (result.detectedByModel.get("model-1") ?? {})).toBe(false);
+		expect("engineBuild" in (result.detectedByModel.get("model-1") ?? {})).toBe(false);
+	});
+
+	it("records no engine from an error body, so a refusal names nothing", async () => {
+		mockFetch(
+			withRunning(
+				jsonResponse({ running: [{ model: "model-1" }] }),
+				routeProps({ "model-1": { error: { message: "model is not loaded" } } }),
+			),
+		);
+		const result = await buildModelLimits([createEntry({ id: "model-1" })], createInstance());
+
+		expect("engine" in (result.detectedByModel.get("model-1") ?? {})).toBe(false);
 	});
 
 	it("detects image input from the various /props shapes", async () => {

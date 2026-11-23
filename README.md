@@ -112,7 +112,7 @@ Multiple llama-swap servers — use the `instances` array. Each entry registers 
 | `basePath` | API path prefix (default `/v1`; normalized to end with `/v1`) |
 | `apiKey` | Bearer token when llama-swap uses `apiKeys` |
 | `contextOverrides` | Per-model context overrides (model id → tokens). Use `/llama-swap-set-context-length` instead of editing manually. |
-| `modelCapabilities` | Auto-generated cache of discovered capabilities (model id → `{reasoning, imageInput, contextWindow, maxTokens}`). Written by the extension; safe to edit or delete. |
+| `modelCapabilities` | Auto-generated cache of discovered capabilities (model id → `{reasoning, imageInput, contextWindow, maxTokens, answerNow, engine, engineBuild}`). Written by the extension; safe to edit or delete. |
 
 Load order: **defaults → `<agent-dir>/pi-llama-swap.json` → environment variables**.
 
@@ -122,7 +122,7 @@ Context size is auto-detected from llama-swap's `/v1/models` and `/running` endp
 
 ### Model capabilities cache
 
-Discovered per-model capabilities — reasoning (thinking) support, image input, context window, and max output tokens — are cached in the config file under `modelCapabilities` (per instance). The cache is:
+Discovered per-model capabilities — reasoning (thinking) support, image input, context window, max output tokens, the answer-now capability, and the engine name and build string — are cached in the config file under `modelCapabilities` (per instance). The cache is:
 
 - **Written** on every successful provider refresh: at startup (from the `/v1/models` entries, which cover models that are not loaded, plus `/props` for models already running) and after the first response of each model (once it is loaded and `/props` is readable).
 - **Used** at startup for models that are not currently running, so pi knows e.g. thinking support *before* the first request.
@@ -131,6 +131,33 @@ Discovered per-model capabilities — reasoning (thinking) support, image input,
 Precedence (highest wins): user `contextOverrides` > live detection (`/running` + `/props`) > `/v1/models` entries > cache > defaults (256K context; max tokens default to half the context window, since servers typically run llama.cpp with `n_predict -1`). Image input is the exception: a `true` from **any** source wins, because llama-swap declares it per model in `/v1/models` even when the model is unloaded.
 
 You can delete the `modelCapabilities` block at any time — it rebuilds as models are used.
+
+### Engine
+
+pi-llama-swap names the engine behind a model from the signals its `/props` shows, and caches that name in `modelCapabilities.<model>.engine`.
+
+| Signal in `/props` | Cached value |
+|--------------------|--------------|
+| A `basalt` block | `basalt` |
+| `build_info` starting with `strata` | `strata` |
+| `build_info` like `b9468-354ebac8` | `llamacpp` |
+| None of these | Nothing is written |
+
+The build string is cached as written in `modelCapabilities.<model>.engineBuild`, for a named engine only. Nothing here parses it, so another extension can read the build number itself. `pi-answer-now` reads `engine`, `engineBuild`, and `answerNow` from this file to choose how to end a running reply's thinking.
+
+The name is the last engine detected. It goes stale when an alias is swapped to a backend that sends no engine signal, because pi-llama-swap then has nothing to write. An absent field means no engine signal was read — not that the engine is known to be something else. The signals are heuristics: a fork that copies llama.cpp's `b<digits>` build string is named `llamacpp`.
+
+pi-llama-swap does not configure the engine. It sends no reasoning budget and no other sampling override. A reasoning budget belongs in the engine's own config, such as `basalt_config.json`, or in pi's `modelOverrides` under `samplingParams`:
+
+```json
+"modelOverrides": {
+  "llama-swap-tre/qwen3.8-flash-next-iq3_xxs-basalt": {
+    "samplingParams": { "reasoning_budget_tokens": 8192 }
+  }
+}
+```
+
+Keep the budget below pi's `max_tokens` when the engine caps the whole reply at it. Basalt stops the decode pass at the budget, so a budget near or above `max_tokens` truncates the answer, and no budget at all lets a model that keeps thinking use the whole window and return no answer.
 
 ### Environment variables
 

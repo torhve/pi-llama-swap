@@ -28,6 +28,23 @@ export interface LlamaSwapConfig {
 }
 
 /**
+ * Engines pi-llama-swap can name from an observable `/props` signal. The
+ * spellings match the engine names in pi-answer-now, so a value written here is
+ * comparable there. Add a name and its detection signal together, once a
+ * consumer needs it.
+ */
+export const KNOWN_ENGINES = ["basalt", "llamacpp", "strata"] as const;
+
+/** One of `KNOWN_ENGINES`. */
+export type PiLlamaSwapEngine = (typeof KNOWN_ENGINES)[number];
+
+/** An engine name and its raw build string, as one `/props` response gave them. */
+export interface DetectedEngine {
+	id: PiLlamaSwapEngine;
+	build?: string;
+}
+
+/**
  * Discovered capabilities for one model, cached in the config file between runs.
  * All fields optional: only values actually discovered are stored.
  */
@@ -40,6 +57,26 @@ export interface ModelCapabilities {
 	contextWindow?: number;
 	/** Discovered max output tokens. */
 	maxTokens?: number;
+	/**
+	 * Engine accepts `POST /v1/answer_now` to end a running reply's thinking.
+	 * Basalt reports it in `/props` under `basalt.capabilities`. Absent means
+	 * never discovered, unlike `false`, which means the running engine's props
+	 * were read and did not list it.
+	 */
+	answerNow?: boolean;
+	/**
+	 * Engine behind this model, named by the signal its `/props` showed. Absent
+	 * means no engine signal was read, which a consumer must not read as "is not
+	 * that engine": a backend swapped under the same model id can go quiet and
+	 * leave this value stale. Spellings match pi-answer-now's engine names.
+	 */
+	engine?: PiLlamaSwapEngine;
+	/**
+	 * The engine's own build string, as `/props` wrote `build_info`, such as
+	 * `b9468-354ebac8`. Stored only for a named engine. Nothing here parses it,
+	 * so a consumer can gate on its build number itself.
+	 */
+	engineBuild?: string;
 }
 
 /** OpenAI-compatible model entry from GET /v1/models. */
