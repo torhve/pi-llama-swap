@@ -21,6 +21,7 @@ import {
 	applyEnvOverrides,
 	configPath,
 	loadConfig,
+	resolvePreserveThinking,
 	saveContextOverride,
 	saveModelCapabilities,
 } from "../lib/config.js";
@@ -209,6 +210,74 @@ describe("loadConfig", () => {
 		await expect(loadConfig()).rejects.toThrow();
 	});
 
+	it("reads preserveThinking true and false from the instances array", async () => {
+		readFileMock.mockResolvedValue(
+			JSON.stringify({
+				instances: [
+					{ id: "llama-swap", preserveThinking: true },
+					{ id: "llama-swap-2", preserveThinking: false },
+				],
+			}),
+		);
+		const config = await loadConfig();
+
+		expect(config.instances[0].preserveThinking).toBe(true);
+		expect(config.instances[1].preserveThinking).toBe(false);
+	});
+
+	it("reads preserveThinking from the legacy single-instance shape", async () => {
+		readFileMock.mockResolvedValue(JSON.stringify({ preserveThinking: false }));
+		const config = await loadConfig();
+
+		expect(config.instances[0].preserveThinking).toBe(false);
+	});
+
+	it("keeps only boolean entries in a preserveThinkingOverrides map", async () => {
+		readFileMock.mockResolvedValue(
+			JSON.stringify({
+				instances: [
+					{
+						id: "llama-swap",
+						preserveThinkingOverrides: {
+							"model-a": false,
+							"model-b": "yes",
+							"model-c": true,
+							"model-d": 42,
+						},
+					},
+				],
+			}),
+		);
+		const config = await loadConfig();
+
+		expect(config.instances[0].preserveThinkingOverrides).toEqual({ "model-a": false, "model-c": true });
+	});
+
+	it("reads a preserveThinkingOverrides map from the legacy single-instance shape", async () => {
+		readFileMock.mockResolvedValue(
+			JSON.stringify({ preserveThinkingOverrides: { "model-a": false, "model-b": true } }),
+		);
+		const config = await loadConfig();
+
+		expect(config.instances[0].preserveThinkingOverrides).toEqual({ "model-a": false, "model-b": true });
+	});
+
+	it("drops a non-boolean preserveThinking value", async () => {
+		readFileMock.mockResolvedValue(JSON.stringify({ preserveThinking: "false" }));
+		const config = await loadConfig();
+
+		expect(config.instances[0].preserveThinking).toBeUndefined();
+	});
+
+	it("drops an empty preserveThinkingOverrides map", async () => {
+		readFileMock.mockResolvedValue(
+			JSON.stringify({ instances: [{ id: "llama-swap", preserveThinkingOverrides: { "model-a": 42 } }] }),
+		);
+		const config = await loadConfig();
+
+		expect(config.instances[0].preserveThinkingOverrides).toBeUndefined();
+	});
+
 	it("applies environment overrides to the first instance", async () => {
 		readFileMock.mockRejectedValue(enoent());
 		vi.stubEnv("LLAMA_SWAP_URL", "http://10.1.1.1:9999/api");
@@ -220,6 +289,31 @@ describe("loadConfig", () => {
 		expect(inst.port).toBe(9999);
 		expect(inst.basePath).toBe("/api/v1");
 		expect(inst.apiKey).toBe("env-key");
+	});
+});
+
+describe("resolvePreserveThinking", () => {
+	const base = { id: "llama-swap", name: "Llama Swap", origin: "http://127.0.0.1", port: 8080 };
+
+	it("returns undefined when nothing is set", () => {
+		expect(resolvePreserveThinking({ ...base }, "model-a")).toBeUndefined();
+	});
+
+	it("returns the instance-level value when no override is present", () => {
+		expect(resolvePreserveThinking({ ...base, preserveThinking: false }, "model-a")).toBe(false);
+		expect(resolvePreserveThinking({ ...base, preserveThinking: true }, "model-a")).toBe(true);
+	});
+
+	it("prefers a per-model override over the instance value", () => {
+		const instance = { ...base, preserveThinking: true, preserveThinkingOverrides: { "model-a": false } };
+		expect(resolvePreserveThinking(instance, "model-a")).toBe(false);
+		expect(resolvePreserveThinking(instance, "model-b")).toBe(true);
+	});
+
+	it("honors a true override over an instance-level false", () => {
+		const instance = { ...base, preserveThinking: false, preserveThinkingOverrides: { "model-a": true } };
+		expect(resolvePreserveThinking(instance, "model-a")).toBe(true);
+		expect(resolvePreserveThinking(instance, "model-b")).toBe(false);
 	});
 });
 

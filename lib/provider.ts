@@ -7,7 +7,7 @@
 import type { ExtensionAPI, ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import { withAbortTimeout } from "./abort.js";
 import { fetchModels, LlamaSwapClientError } from "./client.js";
-import { DEFAULT_INSTANCE_ID, saveModelCapabilities } from "./config.js";
+import { DEFAULT_INSTANCE_ID, resolvePreserveThinking, saveModelCapabilities } from "./config.js";
 import { buildModelLimits, resolveContextWindow, resolveMaxTokens } from "./context.js";
 import type { LlamaSwapConfig, LlamaSwapInstance, OpenAIModelEntry, RefreshResult } from "./types.js";
 import { buildBaseUrl } from "./url.js";
@@ -68,6 +68,8 @@ const REFRESH_REUSE_WINDOW_MS = 1_000;
  * @param reasoningByModel - Models whose engine signals thinking support (the
  *   /props capability flag, else a chat template that renders a think block).
  * @param runningStateByModel - llama-swap process state per model id (GET /running).
+ * @param preserveThinkingByModel - Resolved preserve-thinking setting per model id
+ *   (`false` = stop replaying past thinking; absent or true = today's behaviour).
  * @returns Pi-compatible model configs.
  */
 export function mapOpenAIModelsToPi(
@@ -77,6 +79,7 @@ export function mapOpenAIModelsToPi(
 	imageInputByModel: Map<string, boolean>,
 	reasoningByModel: Map<string, boolean>,
 	runningStateByModel?: Map<string, string>,
+	preserveThinkingByModel?: Map<string, boolean>,
 ): ProviderModelConfig[] {
 	return entries.map((model) => {
 		const contextWindow = resolveContextWindow(model.id, contextByModel);
@@ -115,6 +118,18 @@ export function mapOpenAIModelsToPi(
 								enable_thinking: { $var: "thinking.enabled" as const },
 								// Effort tier; resolved through thinkingLevelMap, omitted at off.
 								reasoning_effort: { $var: "thinking.effort" as const },
+								// Chat-template kwargs, not samplingParams: this stays inside the
+								// no-sampling-overrides rule in AGENTS.md. llama.cpp Qwen templates
+								// read preserve_thinking. The basalt/strata serve wrappers
+								// whitelist-forward preserve_reasoning and drop the other name.
+								// Engines that know neither ignore both. Gate on nothing else:
+								// chat_template_caps.supports_preserve_reasoning reports true on
+								// engines (inkling) whose templates read neither key.
+								// Only an explicit false changes the request. Absent and true both
+								// leave the template's own default, which is to replay thinking.
+								...(preserveThinkingByModel?.get(model.id) === false
+									? { preserve_thinking: false, preserve_reasoning: false }
+									: {}),
 							},
 						},
 					}
@@ -267,6 +282,14 @@ export async function fetchInstanceModels(
 		detectedByModel,
 		runningStateByModel,
 	} = await buildModelLimits(entries, instance, instance.contextOverrides, options?.signal);
+	// Resolve the preserve-thinking setting once per instance, before mapping.
+	const preserveThinkingByModel = new Map<string, boolean>();
+	for (const entry of entries) {
+		const resolved = resolvePreserveThinking(instance, entry.id);
+		if (resolved !== undefined) {
+			preserveThinkingByModel.set(entry.id, resolved);
+		}
+	}
 	const models = mapOpenAIModelsToPi(
 		entries,
 		contextByModel,
@@ -274,6 +297,7 @@ export async function fetchInstanceModels(
 		imageInputByModel,
 		reasoningByModel,
 		runningStateByModel,
+		preserveThinkingByModel,
 	);
 	lastKnownModelsByInstance.set(instance.id, models);
 	lastProbeByInstance.set(instance.id, { at: Date.now(), models });

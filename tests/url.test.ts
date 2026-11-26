@@ -216,6 +216,39 @@ describe("mergeConfig", () => {
 		expect(merged.modelCapabilities).toBe(caps);
 	});
 
+	it("round-trips preserveThinking and preserveThinkingOverrides", () => {
+		const overrides = { "model-2": false };
+		const merged = mergeConfig(current, { preserveThinking: false, preserveThinkingOverrides: overrides });
+		expect(merged.preserveThinking).toBe(false);
+		expect(merged.preserveThinkingOverrides).toBe(overrides);
+	});
+
+	it("lets an explicit false win over an absent field", () => {
+		const fresh: LlamaSwapInstance = {
+			id: "llama-swap",
+			name: "Llama Swap",
+			origin: "http://127.0.0.1",
+			port: 8080,
+		};
+		expect(mergeConfig(fresh, { preserveThinking: false }).preserveThinking).toBe(false);
+		expect(
+			mergeConfig(fresh, { preserveThinkingOverrides: { "model-2": false } }).preserveThinkingOverrides,
+		).toEqual({
+			"model-2": false,
+		});
+	});
+
+	it("keeps the current preserveThinking values when the partial omits them", () => {
+		const withKeys: LlamaSwapInstance = {
+			...current,
+			preserveThinking: false,
+			preserveThinkingOverrides: { "model-2": false },
+		};
+		const merged = mergeConfig(withKeys, { port: 9000 });
+		expect(merged.preserveThinking).toBe(false);
+		expect(merged.preserveThinkingOverrides).toEqual({ "model-2": false });
+	});
+
 	it("returns a new object, not the same reference", () => {
 		expect(mergeConfig(current, {})).not.toBe(current);
 	});

@@ -99,6 +99,13 @@ function normalizeConnection(raw: Record<string, unknown>): Partial<LlamaSwapIns
 	if (overrides) {
 		out.contextOverrides = overrides;
 	}
+	if (typeof raw.preserveThinking === "boolean") {
+		out.preserveThinking = raw.preserveThinking;
+	}
+	const preserveThinkingOverrides = normalizeBooleanMap(raw.preserveThinkingOverrides);
+	if (preserveThinkingOverrides) {
+		out.preserveThinkingOverrides = preserveThinkingOverrides;
+	}
 	const capabilities = normalizeCapabilities(raw.modelCapabilities);
 	if (capabilities) {
 		out.modelCapabilities = capabilities;
@@ -122,6 +129,40 @@ function normalizeOverrides(value: unknown): Record<string, number> | undefined 
 		}
 	}
 	return Object.keys(overrides).length > 0 ? overrides : undefined;
+}
+
+/**
+ * Validates and normalizes a boolean-override map.
+ * @param value - Raw map value.
+ * @returns Normalized map or undefined when empty/invalid.
+ */
+function normalizeBooleanMap(value: unknown): Record<string, boolean> | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const overrides: Record<string, boolean> = {};
+	for (const [model, flag] of Object.entries(value)) {
+		if (typeof flag === "boolean") {
+			overrides[model] = flag;
+		}
+	}
+	return Object.keys(overrides).length > 0 ? overrides : undefined;
+}
+
+/**
+ * Resolves the effective preserve-thinking setting for one model.
+ * @param instance - The instance holding the setting.
+ * @param modelId - Model id to resolve.
+ * @returns The per-model override when present, else the instance-level value,
+ *   else undefined. Undefined — not true — when nothing is set, so no truthiness
+ *   test can invert the default; treat only an explicit false as the new behaviour.
+ */
+export function resolvePreserveThinking(instance: LlamaSwapInstance, modelId: string): boolean | undefined {
+	const override = instance.preserveThinkingOverrides?.[modelId];
+	if (override !== undefined) {
+		return override;
+	}
+	return instance.preserveThinking;
 }
 
 /**

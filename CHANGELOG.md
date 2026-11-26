@@ -8,6 +8,14 @@ is staging for the next release. See `AGENTS.md` for the rules.
 
 ## Unreleased
 
+- Add `preserveThinking` and `preserveThinkingOverrides`. Set `preserveThinking: false` and the
+  extension sends `preserve_thinking: false` and `preserve_reasoning: false` to the chat template of
+  a reasoning-capable model, so llama.cpp stops replaying past assistant thinking into each request.
+  That replay made long tool loops cite their own earlier guesses as fact. Absent or `true` keeps
+  every request byte for byte as before. `preserveThinkingOverrides` sets the value for one model id
+  and wins over the instance key. Set `false` for llama.cpp Qwen and `*-basalt` / `*-strata` models.
+  Inkling 2 keeps replaying thinking: its template reads no kwarg.
+
 - Name the engine behind a model. The extension reads each running model's `/props` and caches
   `engine` in `modelCapabilities` as `basalt`, `strata`, or `llamacpp`, with the engine's own build
   string in `engineBuild`. Other extensions read both fields from `pi-llama-swap.json` instead of

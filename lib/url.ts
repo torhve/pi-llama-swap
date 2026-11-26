@@ -137,6 +137,11 @@ export function mergeConfig(current: LlamaSwapInstance, partial: Partial<LlamaSw
 		basePath: partial.basePath ?? current.basePath,
 		apiKey: partial.apiKey !== undefined ? partial.apiKey : current.apiKey,
 		contextOverrides: partial.contextOverrides ?? current.contextOverrides,
+		preserveThinking: partial.preserveThinking !== undefined ? partial.preserveThinking : current.preserveThinking,
+		preserveThinkingOverrides:
+			partial.preserveThinkingOverrides !== undefined
+				? partial.preserveThinkingOverrides
+				: current.preserveThinkingOverrides,
 		modelCapabilities: partial.modelCapabilities ?? current.modelCapabilities,
 	};
 }

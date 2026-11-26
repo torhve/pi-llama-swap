@@ -50,6 +50,14 @@ async function loadFresh() {
 	return { provider, client, config };
 }
 
+/**
+ * Reads the chatTemplateKwargs out of a mapped model. `compat` is a union of
+ * provider compat shapes; only the OpenAI chat-completions one exposes
+ * chatTemplateKwargs, so the access goes through a cast.
+ */
+const chatTemplateKwargsOf = (m: ProviderModelConfig): Record<string, unknown> | undefined =>
+	(m.compat as { chatTemplateKwargs?: Record<string, unknown> } | undefined)?.chatTemplateKwargs;
+
 /** Stubs global fetch so buildModelLimits sees an empty /running. */
 function stubEmptyRunning() {
 	return mockFetch((url) => {
@@ -154,6 +162,120 @@ describe("mapOpenAIModelsToPi", () => {
 		expect(missing.reasoning).toBe(false);
 		expect(missing.thinkingLevelMap).toBeUndefined();
 		expect(missing.compat).toBeUndefined();
+	});
+
+	it("leaves the compat block byte-identical when preserveThinking is true", () => {
+		const { ctx, max, img } = emptyMaps();
+		const reason = new Map([["m1", true]]);
+		const preserve = new Map([["m1", true]]);
+		const [mapped] = mapOpenAIModelsToPi([{ id: "m1" }], ctx, max, img, reason, undefined, preserve);
+
+		expect(mapped.compat).toEqual({
+			thinkingFormat: "chat-template",
+			chatTemplateKwargs: {
+				enable_thinking: { $var: "thinking.enabled" },
+				reasoning_effort: { $var: "thinking.effort" },
+			},
+		});
+	});
+
+	it("serializes byte-identically for absent and true, and changes only the two keys for false", () => {
+		const { ctx, max, img } = emptyMaps();
+		const reason = new Map([["m1", true]]);
+		const [absent] = mapOpenAIModelsToPi([{ id: "m1" }], ctx, max, img, reason);
+		const [withTrue] = mapOpenAIModelsToPi(
+			[{ id: "m1" }],
+			ctx,
+			max,
+			img,
+			reason,
+			undefined,
+			new Map([["m1", true]]),
+		);
+		const [withFalse] = mapOpenAIModelsToPi(
+			[{ id: "m1" }],
+			ctx,
+			max,
+			img,
+			reason,
+			undefined,
+			new Map([["m1", false]]),
+		);
+
+		// Absent and true produce the exact same serialized model.
+		expect(JSON.stringify(withTrue)).toBe(JSON.stringify(absent));
+		// False changes exactly the two keys and nothing else.
+		expect(withFalse).toEqual({
+			...absent,
+			compat: {
+				thinkingFormat: "chat-template",
+				chatTemplateKwargs: {
+					enable_thinking: { $var: "thinking.enabled" },
+					reasoning_effort: { $var: "thinking.effort" },
+					preserve_thinking: false,
+					preserve_reasoning: false,
+				},
+			},
+		});
+		for (const key of [
+			"id",
+			"name",
+			"reasoning",
+			"input",
+			"cost",
+			"contextWindow",
+			"maxTokens",
+			"thinkingLevelMap",
+		] as const) {
+			expect(withFalse[key]).toEqual(absent[key]);
+		}
+	});
+
+	it("adds the preserve_* keys only when the resolved value is false", () => {
+		const { ctx, max, img } = emptyMaps();
+		const reason = new Map([["m1", true]]);
+		const preserve = new Map([["m1", false]]);
+		const [mapped] = mapOpenAIModelsToPi([{ id: "m1" }], ctx, max, img, reason, undefined, preserve);
+
+		expect(mapped.compat).toEqual({
+			thinkingFormat: "chat-template",
+			chatTemplateKwargs: {
+				enable_thinking: { $var: "thinking.enabled" },
+				reasoning_effort: { $var: "thinking.effort" },
+				preserve_thinking: false,
+				preserve_reasoning: false,
+			},
+		});
+	});
+
+	it("strips only the models whose resolved value is false", () => {
+		const { ctx, max, img } = emptyMaps();
+		const reason = new Map([
+			["m1", true],
+			["m2", true],
+		]);
+		const preserve = new Map([["m1", false]]);
+		const [m1, m2] = mapOpenAIModelsToPi([{ id: "m1" }, { id: "m2" }], ctx, max, img, reason, undefined, preserve);
+
+		expect(chatTemplateKwargsOf(m1)).toHaveProperty("preserve_thinking", false);
+		expect(chatTemplateKwargsOf(m1)).toHaveProperty("preserve_reasoning", false);
+		expect(chatTemplateKwargsOf(m2)).not.toHaveProperty("preserve_thinking");
+		expect(chatTemplateKwargsOf(m2)).not.toHaveProperty("preserve_reasoning");
+	});
+
+	it("registers no compat block for a non-reasoning model, switch set either way", () => {
+		const { ctx, max, img } = emptyMaps();
+		const reason = new Map<string, boolean>();
+		const preserve = new Map([
+			["m1", false],
+			["m2", true],
+		]);
+		const [m1, m2] = mapOpenAIModelsToPi([{ id: "m1" }, { id: "m2" }], ctx, max, img, reason, undefined, preserve);
+
+		expect(m1.reasoning).toBe(false);
+		expect(m1.compat).toBeUndefined();
+		expect(m2.reasoning).toBe(false);
+		expect(m2.compat).toBeUndefined();
 	});
 
 	it("never adds a reasoning budget to a mapped model", () => {
@@ -548,6 +670,54 @@ describe("fetchInstanceModels", () => {
 		// pi publishes the returned list itself, so this pass must not register.
 		expect(pi.registerProvider).not.toHaveBeenCalled();
 		expect(pi.unregisterProvider).not.toHaveBeenCalled();
+	});
+
+	it("emits the preserve_* keys for a reasoning model with preserveThinking false", async () => {
+		const { provider, client } = await loadFresh();
+		client.fetchModels.mockResolvedValue([createEntry({ id: "model-1" })]);
+		stubEmptyRunning();
+		const instance = createInstance({
+			preserveThinking: false,
+			modelCapabilities: { "model-1": { reasoning: true } },
+		});
+
+		const result = await provider.fetchInstanceModels(instance);
+
+		expect(result.models[0].compat).toEqual({
+			thinkingFormat: "chat-template",
+			chatTemplateKwargs: {
+				enable_thinking: { $var: "thinking.enabled" },
+				reasoning_effort: { $var: "thinking.effort" },
+				preserve_thinking: false,
+				preserve_reasoning: false,
+			},
+		});
+	});
+
+	it("honors a per-model override over the instance-level setting", async () => {
+		const { provider, client } = await loadFresh();
+		client.fetchModels.mockResolvedValue([createEntry({ id: "model-1" }), createEntry({ id: "model-2" })]);
+		stubEmptyRunning();
+		const instance = createInstance({
+			preserveThinking: false,
+			modelCapabilities: {
+				"model-1": { reasoning: true },
+				"model-2": { reasoning: true },
+			},
+			preserveThinkingOverrides: { "model-1": true },
+		});
+
+		const result = await provider.fetchInstanceModels(instance);
+
+		const byId = Object.fromEntries(result.models.map((m) => [m.id, m]));
+		expect(chatTemplateKwargsOf(byId["model-1"])).not.toHaveProperty("preserve_thinking");
+		expect(chatTemplateKwargsOf(byId["model-1"])).not.toHaveProperty("preserve_reasoning");
+		expect(chatTemplateKwargsOf(byId["model-2"])).toEqual({
+			enable_thinking: { $var: "thinking.enabled" },
+			reasoning_effort: { $var: "thinking.effort" },
+			preserve_thinking: false,
+			preserve_reasoning: false,
+		});
 	});
 
 	it("throws when the model probe fails, leaving the fallback to the caller", async () => {

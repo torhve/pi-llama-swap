@@ -86,6 +86,7 @@ Create `<agent-dir>/pi-llama-swap.json` to override defaults. `<agent-dir>` is p
   "origin": "http://127.0.0.1",
   "port": 8080,
   "apiKey": "optional-key",
+  "preserveThinking": false,
   "contextOverrides": {
     "my-model": 32768
   }
@@ -112,6 +113,8 @@ Multiple llama-swap servers — use the `instances` array. Each entry registers 
 | `basePath` | API path prefix (default `/v1`; normalized to end with `/v1`) |
 | `apiKey` | Bearer token when llama-swap uses `apiKeys` |
 | `contextOverrides` | Per-model context overrides (model id → tokens). Use `/llama-swap-set-context-length` instead of editing manually. |
+| `preserveThinking` | Set `false` to stop replaying past assistant thinking into each request. Absent or `true` keeps today's behaviour. Only `false` sends the `preserve_thinking` / `preserve_reasoning` chat-template kwargs — see [Preserve thinking](#preserve-thinking). |
+| `preserveThinkingOverrides` | Per-model override of `preserveThinking` (model id → boolean). Wins over the instance-level value for the models it names. |
 | `modelCapabilities` | Auto-generated cache of discovered capabilities (model id → `{reasoning, imageInput, contextWindow, maxTokens, answerNow, engine, engineBuild}`). Written by the extension; safe to edit or delete. |
 
 Load order: **defaults → `<agent-dir>/pi-llama-swap.json` → environment variables**.
@@ -132,8 +135,8 @@ For a running model, `/props` is fetched from three URLs in order, and the first
 engine's own `proxy` address from `/running`, then llama-swap's `/props?model=<id>`, then llama-swap's
 `/upstream/<id>/props`. The proxy address is a loopback port on the llama-swap host, so it fails when
 llama-swap runs on another machine. llama-swap passes `/props?model=<id>` to the engine with the model
-id unchanged, so an engine that serves `/props` only for its own model name rejects it: Strata calls
-`qfn3.8-ud_iq2_xs` `qwen3.8-flash-next-ud_iq2_xs-strata` and answers `model not found`. The third URL
+id unchanged, so an engine that names its backends on the engine side rejects it and answers `model
+not found`; a Strata backend does this. The third URL
 carries the llama-swap id in the path, so llama-swap selects the backend and forwards a request that
 names no model. Neither probe loads a model: `?model=` carries `autoload=false`, which makes llama-swap
 answer 409 instead of starting one, and `/upstream/<id>/props` runs only after that probe answers 404
@@ -142,6 +145,59 @@ for a model `/running` reported ready. A reverse proxy in front of llama-swap mu
 Precedence (highest wins): user `contextOverrides` > live detection (`/running` + `/props`) > `/v1/models` entries > cache > defaults (256K context; max tokens default to half the context window, since servers typically run llama.cpp with `n_predict -1`). Image input is the exception: a `true` from **any** source wins, because llama-swap declares it per model in `/v1/models` even when the model is unloaded.
 
 You can delete the `modelCapabilities` block at any time — it rebuilds as models are used.
+
+### Preserve thinking
+
+In a long tool loop, llama.cpp replays each assistant turn's thinking into the next request. The
+model then reads its own earlier guesses as things it already proved. Local Qwen models start
+inventing facts about the session: "the user keeps repeating", "junk is injected between my calls".
+State one of those once and the model keeps citing it for the rest of the session.
+
+Set `preserveThinking: false` to stop the replay. The extension then adds two chat-template kwargs to
+each request: `preserve_thinking: false` and `preserve_reasoning: false`. I checked both names against
+the engines I run: llama.cpp Qwen templates read the first, and the basalt and strata serve wrappers
+read the second. An engine that knows neither ignores both, so one key covers every engine tested
+here. These are template kwargs, not sampling overrides, and they do not change what pi sends for
+reasoning effort.
+
+Set the key on the instance, or per model with `preserveThinkingOverrides`. The per-model value wins
+for the ids it names:
+
+```json
+{
+  "preserveThinking": false,
+  "preserveThinkingOverrides": {
+    "llama-swap/qwen3.8-flash-next": true
+  }
+}
+```
+
+Set `preserveThinking: false` for llama.cpp Qwen and for `*-basalt` / `*-strata` models. Leave the key
+out, or set it to `true`, and every request stays byte for byte what this extension sent before.
+
+Set the key if long sessions drift. In my own long sessions, replayed thinking is where those false
+premises came from, and turning it off removed them there. Each assistant turn that had replayed
+thinking also came back 565 prompt tokens smaller. These are observations from one machine and one
+model, not a benchmark. Another template can answer differently.
+
+Two limits:
+
+- **The model must be a thinking model.** The extension adds these kwargs only to the compat block it
+  builds for a model it detects as reasoning-capable. A model registered as text-only gets no compat
+  block, so the key does nothing there. The extension caches `modelCapabilities.<model>.reasoning`,
+  and a cached `true` survives a probe that reads nothing, so check that field before you debug.
+- **`models.json` has the last word.** Pi merges your `compat.chatTemplateKwargs` and your
+  `modelOverrides` over the extension's, so a `preserve_thinking` you set there wins for that model.
+  Remove those two keys from `models.json` when you turn this on. A `models[]` entry for a model id
+  replaces the model outright, so do not add one for a model you set `preserveThinking` on.
+
+The Inkling 2 template I tested keeps replaying thinking. It writes `message.reasoning_content` into
+every request with both kwargs present, and this extension cannot rewrite the messages pi already
+built. Its `/props` even reports `supports_preserve_reasoning: true`, so do not read that flag as a
+promise.
+
+Pi reads model metadata when the `/model` picker opens. Open `/model` or restart pi after you edit the
+config; a session already in flight keeps the setting it started with.
 
 ### Engine
 
@@ -162,7 +218,7 @@ pi-llama-swap does not configure the engine. It sends no reasoning budget and no
 
 ```json
 "modelOverrides": {
-  "llama-swap-tre/qwen3.8-flash-next-iq3_xxs-basalt": {
+  "llama-swap/qwen3.8-flash-next": {
     "samplingParams": { "reasoning_budget_tokens": 8192 }
   }
 }

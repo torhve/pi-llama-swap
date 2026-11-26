@@ -41,6 +41,25 @@ Do not add a sampling override for any engine — no `reasoning_budget_tokens`, 
 `basalt_config.json`, or in pi's `modelOverrides`. Detect the engine and report it; do not tune it.
 `pi-answer-now` follows the same rule.
 
+A chat-template kwarg is not a sampling override. `preserveThinking` sends `preserve_thinking` and
+`preserve_reasoning` in `compat.chatTemplateKwargs`, and pi's openai-completions API maps those to the
+`chat_template_kwargs` request field, not to the sampler. They are the only kwargs this extension
+sends, and it sends them only when the operator set the key to `false` for that model. Send no other
+kwarg. Do not gate these two on a `/props` capability flag:
+`chat_template_caps.supports_preserve_reasoning` reported `true` on the Inkling 2 template tested
+here, where neither kwarg stopped the replay.
+
+## Thinking replay
+
+llama.cpp replays each assistant turn's thinking block into the next request. `preserveThinking`
+turns that off per model. Keep the rule uniform: never replay past thinking. A per-turn rule, such as
+keeping the last turn's thinking, rewrites the prompt on every request, and prefix caching then fails
+every turn. Uniform replay keeps the prompt append-only, so prefix caching keeps working.
+
+This extension registers model metadata. It never rewrites the messages pi builds, so it cannot strip
+`reasoning_content` from a template that ignores kwargs, such as Inkling 2. Close that gap only when
+pi exposes an outbound message hook.
+
 ## Changelog
 
 Pi shows this package's changelog on the launch after an update. It reads `CHANGELOG.md` from the

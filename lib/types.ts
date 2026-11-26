@@ -18,6 +18,13 @@ export interface LlamaSwapInstance {
 	apiKey?: string;
 	/** Per-model context window overrides (model id -> tokens). */
 	contextOverrides?: Record<string, number>;
+	/**
+	 * Replay past assistant thinking into each request. Absent or true: today's
+	 * behaviour. Only an explicit false changes the request.
+	 */
+	preserveThinking?: boolean;
+	/** Per-model override of preserveThinking, keyed by model id. */
+	preserveThinkingOverrides?: Record<string, boolean>;
 	/** Cached per-model capabilities discovered from llama-swap (model id -> caps). */
 	modelCapabilities?: Record<string, ModelCapabilities>;
 }
