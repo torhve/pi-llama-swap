@@ -391,10 +391,10 @@ interface RunningModelInfo {
  * upstream `proxy` reported by `/running`; llama-swap's own `/props?model=…`;
  * and llama-swap's `/upstream/<model>/props`. The first fails for a remote
  * instance, where that proxy is a loopback port on the swap host. The second
- * fails when the engine serves `/props` only for its own model name — Strata
- * calls `qfn3.8-ud_iq2_xs` `qwen3.8-flash-next-ud_iq2_xs-strata` and answers
- * the llama-swap id with `model not found`. The third carries the llama-swap
- * id in the path, so llama-swap resolves the route and forwards a request
+ * fails when the engine serves `/props` only for its own model name: a Strata
+ * backend names its backends engine-side, so it rejects a llama-swap id with
+ * `model not found`. The third carries the llama-swap id in the path, so
+ * llama-swap resolves the route and forwards a request
  * that names no model. The `?model=` probe carries `autoload=false`, so llama-swap answers 409
  * rather than loading a model that exited mid-pass. The `/upstream/…` probe follows only a 404
  * from that probe — the one answer that proves an engine rejected the name — and only for a model
