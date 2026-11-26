@@ -8,6 +8,8 @@ is staging for the next release. See `AGENTS.md` for the rules.
 
 ## Unreleased
 
+## 0.3.0 — 2026-11-26
+
 - Add `preserveThinking` and `preserveThinkingOverrides`. Set `preserveThinking: false` and the
   extension sends `preserve_thinking: false` and `preserve_reasoning: false` to the chat template of
   a reasoning-capable model, so llama.cpp stops replaying past assistant thinking into each request.
